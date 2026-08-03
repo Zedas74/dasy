@@ -1,6 +1,10 @@
 # HTML, SVG and Dasy
 
-The `dasy()` function and the `html` template literal were created to make rendering data-driven HTML pages in the browser easier and simpler (light a lightweight React replacement).
+The `dasy()` function and the `html` template literal were created to make rendering data-driven HTML pages in the browser easier and simpler (it is like a lightweight React replacement).
+
+**Please check the live demo collection to understand what is it good for!**
+
+[Example demo collection](https://zedas74.github.io/dasy/examples/examples.html)
 
 (If you are not familiar with template literals, [you can find an explanation here](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Template_literals))
 
@@ -29,14 +33,6 @@ Finally, include the module in your pages:
 </body>
 </html>
 ```
-
-## Working examples
-
-**Please check these first!**
-
-Working demos for various use cases with explanation:
-
-- [Example collection](https://zedas74.github.io/dasy/examples/examples.html)
 
 ## Okay, but what exactly is `html` for?
 
