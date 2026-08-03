@@ -1,0 +1,123 @@
+body {
+	padding: 0;
+	margin: 0;
+	font-family: Seravek, 'Gill Sans Nova', Ubuntu, Calibri, 'DejaVu Sans', source-sans-pro, sans-serif;
+font-weight: normal;
+	& div.body {
+		display: grid;
+		grid-template-columns: max-content max-content 1fr;
+		/* column-gap: 1em; */
+		grid-template-rows: max-content 1fr;
+		height: 100vh;
+		width: 100vw;
+
+		& h2 {
+			margin: 0 0 0.2em 0;
+			padding: 0.2em;
+			border-bottom: 1.5px dotted silver;
+			font-size: 120%;
+		}
+
+		& > div {
+			padding: 0.2em;
+			overflow: auto;
+
+			&:not(:last-of-type) {
+				padding-right: 0.5em;
+				margin-right: 0.5em;
+				border-right: 1.5px dotted silver;
+			}
+		}
+	}
+}
+
+#output {
+	display: grid;
+	grid-template-rows: 1fr 1fr;
+}
+
+#result {
+	min-width: 15em;
+
+	& table {
+		border-collapse: collapse;
+
+		& td {
+			border: 1px solid silver;
+			padding: 0;
+
+			&:not(:scope > input) {
+				padding: 0.2em;
+			}
+
+			& > input {
+				border: none;
+				width: 4em;
+			}
+		}
+	}
+}
+
+#data {
+	border-top: 1px solid silver;
+	tab-size: 2em; 
+	white-space: pre-wrap; 
+	font-family: Consolas, Lucida Console, Cascadia Code, Courier New, monospace;
+	font-weight: normal;
+	font-size: 75%;
+	color: #001080;
+}
+
+#examples a {
+	text-decoration: none;
+	margin-bottom: 0.2em;
+
+	&:hover {
+		text-decoration: underline;
+	}
+
+	&:visited {
+		color: black;
+	}
+
+	&:target {
+		outline: none;
+	}
+
+	&.active {
+		color: teal;
+	}
+}
+
+#source {
+	tab-size: 2em; 
+	white-space: pre-wrap; 
+	font-family: Consolas, Lucida Console, Cascadia Code, Courier New, monospace;
+	font-weight: normal;
+	font-size: 75%;
+	color: #001080;
+}
+
+div.books {
+	columns: 3;
+	padding: 0.5em;
+	column-gap: 0;
+
+	& div.book {
+		font-size: 75%;
+		border: 1px solid grey;
+		padding: 0.5em;
+		break-inside: avoid;
+		margin: 0 0.5em 0.5em 0;
+	}
+}
+
+div.form2col {
+	display: grid; 
+	grid-template-columns: max-content 1fr; 
+	justify-items: start
+}
+
+input:invalid {
+	background-color: #ffd0d0;
+}

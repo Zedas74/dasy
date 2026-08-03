@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>Dasy examples</title>
+		<link rel="icon" href="#">
+		<script type="module">
+
+import { highlight } from './highlight.mjs';
+import { html } from '../dist/dasy.mjs';
+
+const aExamples = [
+	{ title: `How to use the 'html' template literal`, script: 'ex_html' },
+	{ title: `Render a two dimensional array with dasy`, script: 'ex_table' },
+	{ title: `More advanced grid rendering with dasy`, script: 'ex_table2' },
+	{ title: `Multiple templates on the same data`, script: 'ex_multi' },
+	{ title: `How to use form data`, script: 'ex_form' },
+	{ title: `Simple filtered, ordered list`, script: 'ex_filter' },
+	{ title: `Nested withs`, script: 'ex_nested' },
+	{ title: `Dynamic dasy creation`, script: 'ex_dynamic' },
+	{ title: `Form undo`, script: 'ex_undo' },
+	{ title: `Recursive dasy`, script: 'ex_outline' },
+	{ title: `dasy with SVG`, script: 'ex_svg' },
+];
+
+function showJSON(oJSON) {
+	const oDataElement = document.getElementById('data');
+	oDataElement.innerHTML = JSON.stringify(oJSON, undefined, 2);
+}
+
+async function load(sExample) {
+	const sMJSFileName = `./${sExample}.mjs`;
+	const oResultElement = document.getElementById('result');
+	const oSourceElement = document.getElementById('source');
+	const oDataElement = document.getElementById('data');
+	oResultElement.innerHTML = '';
+	oSourceElement.innerHTML = '';
+	oDataElement.innerHTML = '';
+
+	const { render } = await import(sMJSFileName);
+	render(oResultElement, showJSON);
+	const sText = await (await fetch(sMJSFileName)).text();
+	highlight(sText, oSourceElement);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+	document.getElementById('examples').append(
+		...aExamples.map(o => html`<a id="${o.script}" href="${'#' +o.script}" onClick="${e => { e.stopPropagation(); load(o.script); }}">${
+			o.title}</a><br/>`)
+	);
+
+	const onHashChanged = () =>
+		document.querySelectorAll('#examples > a').forEach(a => 
+			a.classList.toggle('active', a.hash === location.hash));
+	onHashChanged();
+
+	if (location.hash)
+		load(location.hash.slice(1));
+
+	window.addEventListener('hashchange', onHashChanged);
+});
+
+		</script>
+		<link href="./examples.css" rel="stylesheet" type="text/css">
+		<link href="./highlight.css" rel="stylesheet" type="text/css">
+	</head>
+	<body>
+		<div class="body">
+			<h2>Examples</h2>
+			<h2>Result / Data</h2>
+			<h2>Source code (with explanation)</h2>
+			<div id="examples"></div>
+			<div id="output">
+				<div id="result">
+
+				</div>
+				<div id="data">
+
+				</div>
+			</div>
+			<div id="source"></div>
+		</div>
+	</body>
+</html>

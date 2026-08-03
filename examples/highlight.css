@@ -1,0 +1,34 @@
+::highlight(comment) {
+	color: green;
+}
+::highlight(string) {
+	color: #A31515;
+}
+::highlight(tag) {
+	color: #a34915;
+}
+::highlight(command) {
+	color: #AF00DB;
+}
+::highlight(keyword) {
+	color: #0000ff;
+}
+::highlight(operator) {
+	color: black;
+}
+::highlight(function) {
+	color: #795E26;
+}
+::highlight(dasy) {
+	color: blueviolet;
+	text-decoration: underline;
+}
+::highlight(attribute) {
+	color: red;
+}
+::highlight(number) {
+	color: teal;
+}
+::highlight(lock) {
+	color: #001080;
+}

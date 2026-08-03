@@ -1,0 +1,16 @@
+{
+  "name": "@zedas74/dasy",
+  "version": "1.0.0",
+  "description": "Lightweight React replacement",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/dasy.d.ts",
+      "import": "./dist/dasy.mjs"
+    }
+  },
+  "license": "MIT"
+}
