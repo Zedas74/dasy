@@ -4,7 +4,7 @@ The `dasy()` function and the `html` template literal were created to make rende
 
 **Please check the live demo collection to understand what is it good for!**
 
-[Example demo collection](https://zedas74.github.io/dasy/examples/examples.html)
+[Example demo collection](https://zedas74.github.io/dasy/examples/examples.html#ex_html)
 
 (If you are not familiar with template literals, [you can find an explanation here](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Template_literals))
 
