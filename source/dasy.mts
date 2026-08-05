@@ -1,7 +1,7 @@
 import { applyDiffs, diffDeep, JSONPath, getByPath, setByPath, assertNoReferenceRedundancies, type DiffEntry, JSONUndoBuffer } from './json_tools.mjs';
 import { html, svg, type HTMLAttributeValue } from './html.mjs';
 
-type DasyPathArgument = string | JSONPath | undefined;
+type DasyPathArgument = JSONPath | string;
 type DasyDiffKind = DiffEntry[1];
 type DasyDiffEntry = DiffEntry;
 type DasyWatcherKind = 'for' | 'with';
@@ -37,6 +37,72 @@ type DasyWatcherParams = {
     kind?: DasyWatcherKind;
     children?: DasyWatcher[];
     emptyTemplate?: DasyTemplateFunction;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// DasyDataSource
+// ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+type DasyDataSourceSubscriber = {
+    dasy: Dasy;
+    basePath: JSONPath | undefined;
+    beforeRefresh?: (data: object) => void;
+};
+
+/**
+ * Shared data source for multiple Dasy instances.
+ *
+ * Owns the data model, its backup, and the diff computation.
+ * Dasy instances subscribe with a JSONPath scope; on refresh()
+ * the source computes one diff for the whole data, then forwards
+ * the relevant, scope-relative diff entries to each subscriber.
+ */
+class DasyDataSource {
+    #data: object;
+    #backup: object | undefined;
+    #subscribers: Set<DasyDataSourceSubscriber> = new Set();
+
+    constructor(data: object) {
+        assertNoReferenceRedundancies(data, 'dasy data source data');
+        this.#data = data;
+        this.#backup = structuredClone(data);
+    }
+
+    get data(): object {
+        return this.#data;
+    }
+
+    /**
+     * Registers a Dasy subscriber at the given JSONPath scope.
+     * Returns an unsubscribe function.
+     */
+    subscribe(dasy: Dasy, path: JSONPath | undefined, beforeRefresh?: (data: object) => void): () => void {
+        const subscriber: DasyDataSourceSubscriber = { dasy, basePath: path, beforeRefresh };
+        this.#subscribers.add(subscriber);
+        return () => this.#subscribers.delete(subscriber);
+    }
+
+    /**
+     * Recomputes the diff for the whole shared data, notifies every
+     * subscriber's beforeRefresh, then forwards scope-relative diffs.
+     * The backup is updated after the subscribers have been notified.
+     */
+    refresh(): void {
+        for (const oSubscriber of this.#subscribers) {
+            const scopedData = oSubscriber.basePath ? getByPath(this.#data, oSubscriber.basePath) : this.#data;
+            oSubscriber.beforeRefresh?.(scopedData);
+        }
+
+        const diffs = diffDeep(this.#backup as object, this.#data);
+        for (const oSubscriber of this.#subscribers) {
+            const aRelevantDiffs = oSubscriber.basePath ? diffs.filter(([diffPath]) => 
+                oSubscriber.basePath!.matches(diffPath)) : diffs;
+            if (aRelevantDiffs.length)
+                oSubscriber.dasy.receiveDiffs(aRelevantDiffs);
+        }
+
+        this.#backup = applyDiffs(this.#backup as object, diffs).target;
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -171,7 +237,7 @@ class DasyWatcher {
         if (!renderContext)
             throw new TypeError('Render context missing for "for"');
         if (template === undefined && typeof path === 'function') { template = path; path = ''; }
-        const fullPath = this.resolvePath(typeof path === 'function' ? '' : path);
+        const fullPath = this.resolvePath(path as DasyPathArgument);
         const data = getByPath(dasy.data, fullPath);
         if (!Array.isArray(data)) throw new TypeError('"for" only usable for arrays');
         const renderParent = renderContext.currentWatcher ?? this;
@@ -227,12 +293,12 @@ class DasyWatcher {
             throw new TypeError('"with" must be used inside an element parent');
         if (!renderContext)
             throw new TypeError('Render context missing for "with"');
-        const fullPath = this.resolvePath(path);
-        const data = getByPath(dasy.data, fullPath);
+        const jsonPath = this.resolvePath(path);
+        const data = getByPath(dasy.data, jsonPath);
         if (data === null || typeof data !== 'object' || Array.isArray(data))
             throw new TypeError('"with" only usable for objects');
         const renderParent = renderContext.currentWatcher ?? this;
-        const newWatcher = this.createWatcher({ path: fullPath, parent, template, ownerParent: renderParent, renderParent });
+        const newWatcher = this.createWatcher({ path: jsonPath, parent, template, ownerParent: renderParent, renderParent });
         const result = newWatcher.render(data, renderContext);
         renderParent.registerChild(newWatcher);
         return result;
@@ -244,7 +310,7 @@ class DasyWatcher {
      * If value is Event, uses target.value.
      * Then triggers the dasy refresh.
      */
-    set = (path: DasyPathArgument | unknown, value?: unknown): void => {
+    set = (path: DasyPathArgument, value?: unknown): void => {
         if (value === undefined) { value = path; path = ''; }
         if (value instanceof Event) {
             const source = value.target as HTMLInputElement | HTMLSelectElement;
@@ -253,9 +319,13 @@ class DasyWatcher {
             value = source.value;
         }
         const dasy = this.dasy as Dasy;
+        const jsonPath = this.resolvePath(path);
         // Autoconvert value type to the target field
-        setByPath(dasy.data as any, this.resolvePath(path as DasyPathArgument), value, true);
-        dasy.refresh();
+        setByPath(dasy.data as any, jsonPath, value, true);
+        if (dasy.dataSource)
+            dasy.dataSource.refresh();
+        else
+            dasy.refresh();
     };
 
     /**
@@ -294,11 +364,14 @@ class DasyWatcher {
 // ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 type DasyRootParams = {
-    data: object; // JSON object for the dasy's data source
+    data?: object; // JSON object for the dasy's data source
+    dataSource?: DasyDataSource; // shared data source
+    dataPath?: DasyPathArgument; // JSONPath scope inside the shared data (if not specified, then the whole data used)
+    // The dataPath only used when dataSource is present, to filter uneccessary changes received by the Dasy.
     container: HTMLElement; // DOM container of the dasy DOM output
     beforeRefresh?: (data: object) => void; // called before each refresh pass
     afterRefresh?: (data: object) => void; // called after each refresh pass
-}
+};
 
 /**
  * Dasy — the main rendering class.
@@ -320,7 +393,47 @@ class Dasy {
     #activeRenderContext: DasyRenderContext | undefined;
     #beforeRefresh: ((data: object) => void) | undefined;
     #afterRefresh: ((data: object) => void) | undefined;
+    #dataSource: DasyDataSource | undefined; // Optional shared data source
+    #unsubscribe: (() => void) | undefined; // Unsubscribe from the shared data source
     static #createRenderContext = (): DasyRenderContext => ({ currentWatcher: undefined });
+
+    /**
+     * Constructor: validates the data (no redundant references),
+     * creates a backup when needed, creates the rootWatcher, and renders
+     * the initial DOM tree into the container.
+     */
+    constructor(oParams: DasyRootParams, template: DasyTemplateFunction) {
+        const container = oParams.container;
+        this.#container = container;
+        this.#beforeRefresh = oParams.beforeRefresh;
+        this.#afterRefresh = oParams.afterRefresh;
+
+        let data: object;
+        if ('dataSource' in oParams) {
+            const path = oParams.dataPath ? new JSONPath(oParams.dataPath) : undefined; // Ensure if it is a JSONPath
+            data = path ? getByPath(oParams.dataSource!.data, path) : oParams.dataSource!.data;
+            this.#dataSource = oParams.dataSource;
+            this.#unsubscribe = oParams.dataSource!.subscribe(this, path, oParams.beforeRefresh);
+        } else if ('data' in oParams) {
+            data = oParams.data!;
+            assertNoReferenceRedundancies(data, 'dasy data');
+            this.#backup = structuredClone(data);
+        } else
+            throw new TypeError('Constructor parameter "dataSource" or "data" required');
+
+        this.#data = data;
+        const renderContext = Dasy.#createRenderContext();
+        this.#rootWatcher = new DasyWatcher({ dasy: this, path: new JSONPath([]), parent: container, template });
+        container.append(this.renderTemplate(template, data, this.#rootWatcher, container, renderContext, undefined, undefined));
+    }
+
+    get data(): object {
+        return this.#data as object;
+    }
+
+    get container(): HTMLElement {
+        return this.#container as HTMLElement;
+    }
 
     /**
      * The render context is owned by Dasy instead of being copied
@@ -329,6 +442,13 @@ class Dasy {
      */
     get activeRenderContext(): DasyRenderContext | undefined {
         return this.#activeRenderContext;
+    }
+
+    /**
+     * The shared data source when the dasy was created in data-source mode.
+     */
+    get dataSource(): DasyDataSource | undefined {
+        return this.#dataSource;
     }
 
     #withRenderContext<T>(renderContext: DasyRenderContext, callback: () => T): T {
@@ -354,31 +474,6 @@ class Dasy {
                 renderContext.currentWatcher = previousWatcher;
             }
         });
-    }
-
-    /**
-     * Constructor: validates the data (no redundant references),
-     * creates a backup, creates the rootWatcher, and renders
-     * the initial DOM tree into the container.
-     */
-    constructor({ data, container, beforeRefresh, afterRefresh }: DasyRootParams, template: DasyTemplateFunction) {
-        assertNoReferenceRedundancies(data, 'dasy data');
-        this.#backup = structuredClone(data);
-        this.#data = data;
-        this.#container = container;
-        this.#beforeRefresh = beforeRefresh;
-        this.#afterRefresh = afterRefresh;
-        const renderContext = Dasy.#createRenderContext();
-        this.#rootWatcher = new DasyWatcher({ dasy: this, path: new JSONPath([]), parent: container, template });
-        container.append(this.renderTemplate(template, data, this.#rootWatcher, container, renderContext, undefined, undefined));
-    }
-
-    get data(): object {
-        return this.#data as object;
-    }
-
-    get container(): HTMLElement {
-        return this.#container as HTMLElement;
     }
 
     throwNestedRenderFunction = (position: unknown): never => {
@@ -599,15 +694,10 @@ class Dasy {
     }
 
     /**
-     * Iterates diffs and synchronizes DOM.
-     *
-     * Two passes:
-     * 1. DOM update: for each diff entry, selects the appropriate
-     *    watchers and calls insert/delete/update methods.
-     * 2. Backup update: replays the same diffs onto the backup via
-     *    the shared diff application helper.
+     * Applies the given diffs to the DOM tree without touching the backup.
+     * Used both by the local refresh path and by data-source subscribers.
      */
-    #applyDiffsAndSync(aDiffs: DasyDiffEntry[], renderContext: DasyRenderContext): void {
+    #syncDiffsToDOM(aDiffs: DasyDiffEntry[], renderContext: DasyRenderContext): void {
         const arrayRebuildStarts = this.#collectStructuralArrayRebuildStarts(aDiffs);
         aDiffs.forEach(([path, type, key, value]) => {
             const diffKey = path.asKey();
@@ -622,7 +712,25 @@ class Dasy {
                     this.#update(watcher, renderContext);
             }
         });
+    }
+
+    /**
+     * Syncs DOM changes and replays the same diffs onto the local backup.
+     * Only used when the Dasy owns its own data and backup.
+     */
+    #applyDiffsAndSync(aDiffs: DasyDiffEntry[], renderContext: DasyRenderContext): void {
+        this.#syncDiffsToDOM(aDiffs, renderContext);
         this.#backup = applyDiffs(this.#backup as object, aDiffs).target;
+    }
+
+    /**
+     * Entry point used by DasyDataSource to deliver scope-relative diffs.
+     */
+    receiveDiffs(aDiffs: DasyDiffEntry[]): void {
+        assertNoReferenceRedundancies(this.data, 'dasy data');
+        const renderContext = Dasy.#createRenderContext();
+        this.#syncDiffsToDOM(aDiffs, renderContext);
+        this.#afterRefresh?.(this.data);
     }
 
     /**
@@ -634,6 +742,7 @@ class Dasy {
      * 4. Applies diffs and DOM synchronization (#applyDiffsAndSync).
      */
     refresh(): void {
+        if (this.#dataSource) return;
         this.#beforeRefresh?.(this.#data as object);
         assertNoReferenceRedundancies(this.#data as object, 'dasy data');
         const diffs = diffDeep(this.#backup as object, this.#data as object);
@@ -646,10 +755,13 @@ class Dasy {
      * Full disconnect: rootWatcher disconnect, map/data/backup cleanup.
      */
     disconnect(): void {
+        this.#unsubscribe?.(); this.#unsubscribe = undefined;
         this.#rootWatcher!.disconnect(); this.#rootWatcher = undefined;
         this.#map!.clear(); this.#map = undefined;
         this.#backup = undefined; this.#data = undefined;
         this.#container = undefined;
+        this.#dataSource = undefined;
+        this.#unsubscribe = undefined;
     }
 
     /**
@@ -745,4 +857,4 @@ function dasy(oParams: DasyRootParams, fTemplate: DasyTemplateFunction): Dasy {
     return new Dasy(oParams, fTemplate);
 }
 
-export { html, svg, dasy, JSONUndoBuffer };
+export { html, svg, dasy, DasyDataSource, JSONUndoBuffer };

@@ -304,7 +304,8 @@ declare class JSONUndoBuffer {
 type HTMLAttributeValue = string | number | boolean | null | undefined;
 declare function html(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
 declare function svg(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
-type DasyPathArgument = string | JSONPath | undefined;
+type DasyPathArgument = JSONPath | string;
+type DasyDiffEntry = DiffEntry;
 type DasyWatcherKind = 'for' | 'with';
 type DasyRenderContext = {
     currentWatcher?: DasyWatcher;
@@ -329,6 +330,30 @@ type DasyWatcherParams = {
     children?: DasyWatcher[];
     emptyTemplate?: DasyTemplateFunction;
 };
+/**
+ * Shared data source for multiple Dasy instances.
+ *
+ * Owns the data model, its backup, and the diff computation.
+ * Dasy instances subscribe with a JSONPath scope; on refresh()
+ * the source computes one diff for the whole data, then forwards
+ * the relevant, scope-relative diff entries to each subscriber.
+ */
+declare class DasyDataSource {
+    #private;
+    constructor(data: object);
+    get data(): object;
+    /**
+     * Registers a Dasy subscriber at the given JSONPath scope.
+     * Returns an unsubscribe function.
+     */
+    subscribe(dasy: Dasy, path: JSONPath | undefined, beforeRefresh?: (data: object) => void): () => void;
+    /**
+     * Recomputes the diff for the whole shared data, notifies every
+     * subscriber's beforeRefresh, then forwards scope-relative diffs.
+     * The backup is updated after the subscribers have been notified.
+     */
+    refresh(): void;
+}
 /**
  * This is a data binding observer.
  * Holds the path, the parent DOM element/attr, the template function,
@@ -405,7 +430,7 @@ declare class DasyWatcher {
      * If value is Event, uses target.value.
      * Then triggers the dasy refresh.
      */
-    set: (path: DasyPathArgument | unknown, value?: unknown) => void;
+    set: (path: DasyPathArgument, value?: unknown) => void;
     /**
      * Calls the dasy instance refresh method.
      */
@@ -421,7 +446,9 @@ declare class DasyWatcher {
     disconnect(): void;
 }
 type DasyRootParams = {
-    data: object;
+    data?: object;
+    dataSource?: DasyDataSource;
+    dataPath?: DasyPathArgument;
     container: HTMLElement;
     beforeRefresh?: (data: object) => void;
     afterRefresh?: (data: object) => void;
@@ -440,19 +467,23 @@ type DasyRootParams = {
 declare class Dasy {
     #private;
     /**
+     * Constructor: validates the data (no redundant references),
+     * creates a backup when needed, creates the rootWatcher, and renders
+     * the initial DOM tree into the container.
+     */
+    constructor(oParams: DasyRootParams, template: DasyTemplateFunction);
+    get data(): object;
+    get container(): HTMLElement;
+    /**
      * The render context is owned by Dasy instead of being copied
      * onto every watcher instance. Template callbacks query it only
      * while a render is actively executing.
      */
     get activeRenderContext(): DasyRenderContext | undefined;
     /**
-     * Constructor: validates the data (no redundant references),
-     * creates a backup, creates the rootWatcher, and renders
-     * the initial DOM tree into the container.
+     * The shared data source when the dasy was created in data-source mode.
      */
-    constructor({ data, container, beforeRefresh, afterRefresh }: DasyRootParams, template: DasyTemplateFunction);
-    get data(): object;
-    get container(): HTMLElement;
+    get dataSource(): DasyDataSource | undefined;
     throwNestedRenderFunction: (position: unknown) => never;
     /**
      * Renders template to a DOM node.
@@ -488,6 +519,10 @@ declare class Dasy {
      */
     removeWatcher(oWatcher: DasyWatcher, oOwnerWatcher?: DasyWatcher | undefined): void;
     applyAttributeBindingValue(oAttr: Attr, vValue: unknown, ownerElement?: Element | undefined): void;
+    /**
+     * Entry point used by DasyDataSource to deliver scope-relative diffs.
+     */
+    receiveDiffs(aDiffs: DasyDiffEntry[]): void;
     /**
      * Top-level update method.
      *
@@ -526,4 +561,4 @@ declare class Dasy {
  * Returns: a Dasy instance that controls rendering and updates.
  */
 declare function dasy(oParams: DasyRootParams, fTemplate: DasyTemplateFunction): Dasy;
-export { html, svg, dasy, JSONUndoBuffer };
+export { html, svg, dasy, DasyDataSource, JSONUndoBuffer };

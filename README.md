@@ -4,7 +4,7 @@ The `dasy()` function and the `html` template literal were created to make rende
 
 **Please check the live demo collection to understand what is it good for!**
 
-[Example demo collection](https://zedas74.github.io/dasy/examples/examples.html#ex_html)
+[Example demo collection](https://zedas74.github.io/dasy/examples/examples.html)
 
 (If you are not familiar with template literals, [you can find an explanation here](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Template_literals))
 
@@ -234,6 +234,37 @@ undoBuffer.snapshot();
 undoBuffer.undo(); // or .redo()
 page.refresh();
 ```
+
+## Sharing data across multiple dasy instances
+
+Instead of passing a `data` object directly, you can hand a `DasyDataSource` to the constructor. The data source owns the model and the diff computation, so several `dasy()` instances can observe the same data and only re-render their own slices.
+
+```js
+import { html, dasy, DasyDataSource } from './dasy.mjs';
+
+const shared = new DasyDataSource({
+  form: { counter: 1 }
+});
+
+// First view
+const page1 = dasy({ dataSource: shared, container: document.body }, (_, root) => html`
+  <p>First counter: ${root.with('.form', o => o.counter)}</p>
+`);
+
+// Second view on the same data
+const page2 = dasy({ dataSource: shared, container: document.body }, (_, root) => html`
+  <p>Second counter: ${root.with('.form', o => o.counter)}</p>
+`);
+
+// Changing shared data and refreshing the source updates both views
+shared.data.form.counter++;
+shared.refresh();
+```
+
+When the data source is used, the `dasy()` constructor accepts:
+
+- `dataSource` — a `DasyDataSource` instance.
+- `dataPath` — an optional JSONPath string that scopes the instance to a subtree of the shared data. For example, `{ dataSource: shared, dataPath: '.form' }` makes the template's root data the `.form` object.
 
 ## Highlight in VSCode
 
