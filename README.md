@@ -158,17 +158,38 @@ dasy() is a function that expects a `data` object, a `container` object, and a t
 - `container` will hold the rendered template.
 - Every template function has two parameters by default:
   - In the root template, `rootData` always matches the `data` object passed in as the argument.
-  - `rootContext` a special object, whose `use` and `html` method we use in the example.
+  - `rootContext` a special object, whose `use`, `inspect` and `html` method we use in the example.
 
 **What is `use` good for?**
 
-`use` runs an inner template function on a part of `data` (in the example, the inner `.counter` object), and dasy inserts it in place of the `use` call. In addition, it creates a live link between the data and the DOM in the background, so if we modify anything inside the part managed by `use` (at any depth), the part described by the template is refreshed in the DOM (**and only that part**).
+`use` runs an inner template function on an object part of `data` (in the example, the inner `.counter` object), and dasy inserts it in place of the `use` call. In addition, it creates a live link between the data and the DOM in the background, so if that object changes, the part described by the template is refreshed in the DOM (**and only that part**).
 
 In the example, pressing the button increments `data.counter.value`, and then we ask the whole dasy instance to refresh itself. dasy then figures out which template part inside the `use` is affected, and rebuilds only that part.
 
 The `counterData` variable in the example is the relevant part of the original JSON object, sliced out by the `.counter` path, which here is `{ value: 0 }`. In the root template `roorData` and `data` are the same, but in a nested `use()`/`each()` callback `counterData` is the selected slice.
 
-## The `each` method
+**What is `inspect` good for?**
+
+`inspect` works similarly to `use`, but it can watch objects or arrays, and it rerenders when any descendant path changes under the selected subtree. This is useful for aggregate views, summaries, or computed output over an entire array.
+
+```js
+const data = {
+  rows: [
+    { cells: [{ count: 1 }, { count: 2 }] },
+    { cells: [{ count: 3 }] },
+  ]
+};
+
+dasy({ data, container: document.body }, (_, root) => root.html`
+  <p>${root.inspect('.rows', rows =>
+    rows.map(row => row.cells.reduce((sum, cell) => sum + cell.count, 0)).join(' | ')
+  )}</p>
+`);
+```
+
+If any `count` changes or a cell is inserted/removed anywhere under `.rows`, the `inspect('.rows', ...)` block rerenders.
+
+**What is `each` good for?**
 
 Here is a simple example of using `each`, where we can edit the values of a small table and increase the table size:
 
@@ -207,7 +228,7 @@ const oPage = dasy({ data, container: document.body }, (_, root) => root.html`
 
 ## Nested contexts
 
-`use()` and `each()` return a context object that works like `root` but is bound to the selected path. You can nest them:
+`use()`, `inspect()` and `each()` return a context object that works like `root` but is bound to the selected path. You can nest them:
 
 ```js
 root.use('.counters', ($, outer) => outer.html`

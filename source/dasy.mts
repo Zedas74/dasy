@@ -4,13 +4,14 @@ import { html, svg, type HTMLAttributeValue, type TemplateParams } from './html.
 type DasyPathArgument = JSONPath | string;
 type DasyDiffKind = DiffEntry[1];
 type DasyDiffEntry = DiffEntry;
-type DasyWatcherKind = 'each' | 'use' | 'item';
+type DasyWatcherKind = 'each' | 'use' | 'inspect' | 'item';
 
 type DasyTemplateResult = Node | HTMLAttributeValue | null | undefined | boolean | readonly DasyTemplateResult[];
 type DasyTemplateContext = {
     each(path: DasyPathArgument | DasyTemplateFunction, template?: DasyTemplateFunction, 
         emptyTemplate?: DasyTemplateFunction): (parent: Element, params: TemplateParams) => DocumentFragment;
     use(path: DasyPathArgument, template: DasyTemplateFunction): (parent: Element | Attr, params: TemplateParams) => DasyTemplateResult;
+    inspect(path: DasyPathArgument, template: DasyTemplateFunction): (parent: Element | Attr, params: TemplateParams) => DasyTemplateResult;
     set(path: DasyPathArgument | unknown, value?: unknown): void;
     html(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
     svg(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
@@ -138,6 +139,7 @@ class DasyWatcher {
             each: (path, template, emptyTemplate) => (parent: Element, params: TemplateParams) => 
                 this.renderEach(path, template, emptyTemplate, parent, params),
             use: (path, template) => (parent: Element | Attr, params: TemplateParams) => this.renderUse(path, template, parent, params),
+            inspect: (path, template) => (parent: Element | Attr, params: TemplateParams) => this.renderInspect(path, template, parent, params),
             set: this.set,
             refresh: this.refresh,
             html: (chunks: TemplateStringsArray, ...values: unknown[]) => html({ signal, parentWatcher: this })(chunks, ...values),
@@ -164,7 +166,7 @@ class DasyWatcher {
     parentWatcherFrom(params: TemplateParams): DasyWatcher {
         const parentWatcher = params.parentWatcher as DasyWatcher | undefined;
         if (!parentWatcher)
-            throw new TypeError('each() and use() require context html/svg templates. Use the template context\'s html`...` or svg`...` so signal and watcher ownership are available.');
+            throw new TypeError('each(), use() and inspect() require context html/svg templates. Use the template context\'s html`...` or svg`...` so signal and watcher ownership are available.');
         return parentWatcher;
     }
 
@@ -295,25 +297,38 @@ class DasyWatcher {
         return allItems;
     }
 
+    renderScoped(path: DasyPathArgument, template: DasyTemplateFunction, parent: Element | Attr, params: TemplateParams,
+        kind: 'use' | 'inspect'): DasyTemplateResult {
+        const dasy = this.dasy as Dasy;
+        const attributeBinding = parent instanceof Attr;
+        if (!attributeBinding && !(parent instanceof Element))
+            throw new TypeError(`"${kind}" must be used inside an element parent`);
+        const jsonPath = this.resolvePath(path);
+        const data = getByPath(dasy.data, jsonPath);
+        if (data === null || typeof data !== 'object' || (kind === 'use' && Array.isArray(data)))
+            throw new TypeError(`"${kind}" only usable for ${kind === 'use' ? 'objects' : 'objects or arrays'}`);
+        const parentWatcher = this.parentWatcherFrom(params);
+        const newWatcher = parentWatcher.ownWatcher({ path: jsonPath, parent, template, kind });
+        const result = newWatcher.render(data);
+        return result;
+    }
+
     /**
-     * Renders the `with` directive:
-     * 1. Resolves the full path, fetches the data (must be an object or array).
+     * Renders the `use` directive:
+     * 1. Resolves the full path, fetches the data (must be an object).
      * 2. Creates a new watcher with the full path.
      * 3. Renders the template with the data, and registers the watcher.
      */
     renderUse(path: DasyPathArgument, template: DasyTemplateFunction, parent: Element | Attr, params: TemplateParams): DasyTemplateResult {
-        const dasy = this.dasy as Dasy;
-        const attributeBinding = parent instanceof Attr;
-        if (!attributeBinding && !(parent instanceof Element))
-            throw new TypeError('"use" must be used inside an element parent');
-        const jsonPath = this.resolvePath(path);
-        const data = getByPath(dasy.data, jsonPath);
-        if (data === null || typeof data !== 'object')
-            throw new TypeError('"use" only usable for objects or arrays');
-        const parentWatcher = this.parentWatcherFrom(params);
-        const newWatcher = parentWatcher.ownWatcher({ path: jsonPath, parent, template });
-        const result = newWatcher.render(data);
-        return result;
+        return this.renderScoped(path, template, parent, params, 'use');
+    }
+
+    /**
+     * Renders the `inspect` directive. Unlike `use`, it also rerenders when
+     * any descendant path below the watched subtree changes.
+     */
+    renderInspect(path: DasyPathArgument, template: DasyTemplateFunction, parent: Element | Attr, params: TemplateParams): DasyTemplateResult {
+        return this.renderScoped(path, template, parent, params, 'inspect');
     }
 
     /**
@@ -667,7 +682,7 @@ class Dasy {
     /**
      * Filters watchers based on diff type.
      *
-     * - When an array path has both each and use watchers, ins/del/val must update all of them.
+        * - When an array path has both each and inspect watchers, ins/del/val must update all of them.
      * - Otherwise (val/set/rem): prefers kind='with' watchers,
      *   because value changes affect the content.
      * If the first group is empty, chooses from the other.
@@ -680,6 +695,20 @@ class Dasy {
         if (preferredWatchers.length)
             return preferredWatchers;
         return aWatchersAtPath.filter(watcher => watcher.kind !== preferredKind); // fallbackWatchers
+    }
+
+    #collectInspectWatchers(path: JSONPath, seen: Set<DasyWatcher>): DasyWatcher[] {
+        const inspectWatchers: DasyWatcher[] = [];
+        for (let i = path.length; i >= 0; i--) {
+            const prefix = new JSONPath(path.slice(0, i));
+            for (const watcher of this.#map?.get(prefix.asKey()) ?? []) {
+                if (watcher.kind !== 'inspect' || seen.has(watcher))
+                    continue;
+                seen.add(watcher);
+                inspectWatchers.push(watcher);
+            }
+        }
+        return inspectWatchers;
     }
 
     #updateEachValue(oBaseWatcher: DasyWatcher, key: string | number | undefined): void {
@@ -701,10 +730,14 @@ class Dasy {
      */
     #syncDiffsToDOM(aDiffs: DasyDiffEntry[]): void {
         const arrayRebuildStarts = this.#collectStructuralArrayRebuildStarts(aDiffs);
+        const updatedInspectWatchers = new Set<DasyWatcher>();
         aDiffs.forEach(([path, type, key, value]) => {
             const diffKey = path.asKey();
             const watchersAtPath = Array.from(this.#map?.get(diffKey) ?? []);
             const watchers = this.#selectWatchersForDiff(watchersAtPath, type);
+            for (const watcher of this.#collectInspectWatchers(path, updatedInspectWatchers))
+                if (!watchers.includes(watcher))
+                    watchers.push(watcher);
             for (const watcher of watchers) {
                 if (watcher.dasy !== this)
                     continue;
@@ -712,8 +745,11 @@ class Dasy {
                     this.#rebuildTail(watcher, arrayRebuildStarts.get(diffKey) ?? (key as number));
                 else if (watcher.kind === 'each' && type === 'val')
                     this.#updateEachValue(watcher, key);
-                else
+                else {
+                    if (watcher.kind === 'inspect')
+                        updatedInspectWatchers.add(watcher);
                     this.#update(watcher);
+                }
             }
         });
     }

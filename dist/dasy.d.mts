@@ -310,11 +310,12 @@ declare function svg(params: TemplateParams): HTMLTemplateFunction;
 declare function svg(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
 type DasyPathArgument = JSONPath | string;
 type DasyDiffEntry = DiffEntry;
-type DasyWatcherKind = 'each' | 'use' | 'item';
+type DasyWatcherKind = 'each' | 'use' | 'inspect' | 'item';
 type DasyTemplateResult = Node | HTMLAttributeValue | null | undefined | boolean | readonly DasyTemplateResult[];
 type DasyTemplateContext = {
     each(path: DasyPathArgument | DasyTemplateFunction, template?: DasyTemplateFunction, emptyTemplate?: DasyTemplateFunction): (parent: Element, params: TemplateParams) => DocumentFragment;
     use(path: DasyPathArgument, template: DasyTemplateFunction): (parent: Element | Attr, params: TemplateParams) => DasyTemplateResult;
+    inspect(path: DasyPathArgument, template: DasyTemplateFunction): (parent: Element | Attr, params: TemplateParams) => DasyTemplateResult;
     set(path: DasyPathArgument | unknown, value?: unknown): void;
     html(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
     svg(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
@@ -424,13 +425,19 @@ declare class DasyWatcher {
      * 4. Registers the baseWatcher and inner watchers in the dasy.
      */
     renderEach(path: DasyPathArgument | DasyTemplateFunction, template: DasyTemplateFunction | undefined, emptyTemplate: DasyTemplateFunction | undefined, parent: Element, params: TemplateParams): DocumentFragment;
+    renderScoped(path: DasyPathArgument, template: DasyTemplateFunction, parent: Element | Attr, params: TemplateParams, kind: 'use' | 'inspect'): DasyTemplateResult;
     /**
-     * Renders the `with` directive:
-     * 1. Resolves the full path, fetches the data (must be an object or array).
+     * Renders the `use` directive:
+     * 1. Resolves the full path, fetches the data (must be an object).
      * 2. Creates a new watcher with the full path.
      * 3. Renders the template with the data, and registers the watcher.
      */
     renderUse(path: DasyPathArgument, template: DasyTemplateFunction, parent: Element | Attr, params: TemplateParams): DasyTemplateResult;
+    /**
+     * Renders the `inspect` directive. Unlike `use`, it also rerenders when
+     * any descendant path below the watched subtree changes.
+     */
+    renderInspect(path: DasyPathArgument, template: DasyTemplateFunction, parent: Element | Attr, params: TemplateParams): DasyTemplateResult;
     /**
      * Sets a value in the data model at the given path.
      * If value is undefined, then value=path, path=''.
