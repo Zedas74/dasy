@@ -34,7 +34,7 @@ Finally, include the module in your pages:
 </html>
 ```
 
-## Okay, but what exactly is `html` for?
+## What exactly is `html` for?
 
 A long-standing problem is that creating DOM elements with events from JavaScript can be done in only two ways: either by creating elements manually using DOM manipulation methods, or by using string-based HTML and adding events afterward (for now, let's ignore classic "onclick" and similar events, as they cause numerous issues and are generally not recommended).
 
@@ -124,19 +124,29 @@ The `html` function also has an alternative version (imported from the same plac
 
 Here is a simple `dasy` example:
 ```js
-control = dasy({ data: { counter: { value: 0 } }, container: document.body }, (data, root) => html`
-  <article class="counter-box">
-    <label>dasy</label>
-    <div class="button-row">${
-      root.with('.counter', $ => html`
-        <input class="demo-input" type="number" value="${$.value}"/>
-      `)}
-      <button class="demo-button" onClick="${() => {
-        data.counter.value += 1;
-        root.refresh();
-      }}">+1</button>
-    </div>
-  </article>
+
+// Only dasy is included!
+import { dasy } from './js/dasy.mjs';
+
+// …
+
+control = dasy({ data: { counter: { value: 0 } }, container: document.body }, 
+  // This is the template function for the provided data. The root is the context
+  // which contains multiple methods for the context. Inside the dasy, the html 
+  // literal must be accessed through the context!
+  (rootData, rootContext) => rootContext.html`
+    <article class="counter-box">
+      <label>Dasy</label>
+      <div class="button-row">${
+        rootContext.use('.counter', (counterData, counterContext) => counterContext.html`
+          <input type="number" value="${counterData.value}"/>
+        `)}
+        <button onClick="${() => {
+          data.counter.value += 1;
+          rootContext.refresh();
+        }}">+1</button>
+      </div>
+    </article>
 `;
 ```
 
@@ -146,22 +156,21 @@ dasy() is a function that expects a `data` object, a `container` object, and a t
 
 - `data` can be any JSON object, which means it cannot contain recursion, multiple references, and so on.
 - `container` will hold the rendered template.
-- Optional callbacks: `beforeRefresh` runs before every refresh (good for derived data), `afterRefresh` runs after.
 - Every template function has two parameters by default:
-  - In the root template, `data` always matches the `data` object passed in as the argument.
-  - `root` is a special object, whose `with` method we use in the example.
+  - In the root template, `rootData` always matches the `data` object passed in as the argument.
+  - `rootContext` a special object, whose `use` and `html` method we use in the example.
 
-**What is `with` good for?**
+**What is `use` good for?**
 
-`with` runs an inner template function on a part of `data` (in the example, the inner `.counter` object), and dasy inserts it in place of the `with` call. In addition, it creates a live link between the data and the DOM in the background, so if we modify anything inside the part managed by `with` (at any depth), the part described by the template is refreshed in the DOM (**and only that part**).
+`use` runs an inner template function on a part of `data` (in the example, the inner `.counter` object), and dasy inserts it in place of the `use` call. In addition, it creates a live link between the data and the DOM in the background, so if we modify anything inside the part managed by `use` (at any depth), the part described by the template is refreshed in the DOM (**and only that part**).
 
-In the example, pressing the button increments `data.counter.value`, and then we ask the whole dasy instance to refresh itself. dasy then figures out which template part inside the `with` is affected, and rebuilds only that part.
+In the example, pressing the button increments `data.counter.value`, and then we ask the whole dasy instance to refresh itself. dasy then figures out which template part inside the `use` is affected, and rebuilds only that part.
 
-The `$` variable in the example is the relevant part of the original JSON object, sliced out by the `.counter` path, which here is `{ value: 0 }`. In the root template `$` and `data` are the same, but in a nested `with()`/`for()` callback `$` is the selected slice.
+The `counterData` variable in the example is the relevant part of the original JSON object, sliced out by the `.counter` path, which here is `{ value: 0 }`. In the root template `roorData` and `data` are the same, but in a nested `use()`/`each()` callback `counterData` is the selected slice.
 
-## `For` method
+## The `each` method
 
-Here is a simple example of using `for`, where we can edit the values of a small table and increase the table size:
+Here is a simple example of using `each`, where we can edit the values of a small table and increase the table size:
 
 ```js
 const data = {
@@ -171,11 +180,11 @@ const data = {
 	]
 }
 
-const oPage = dasy({ data, container: document.body }, (_, root) => html`
+const oPage = dasy({ data, container: document.body }, (_, root) => root.html`
   <div>
     <table>${
-      root.for('.grid', (_, row) => html`<tr>${
-        row.for(($, cell) => html`<td><input style="background:transparent; color: inherit; border: none" 
+      root.each('.grid', (_, row) => row.html`<tr>${
+        row.each(($, cell) => cell.html`<td><input style="background:transparent; color: inherit; border: none" 
           value="${$}" onChange="${cell.set}"/></td>`)
       }</tr>`)
     }</table><br/>
@@ -187,23 +196,23 @@ const oPage = dasy({ data, container: document.body }, (_, root) => html`
 **What do we see here?**
 
 - `(_, root)` swallows the template data object; we do not need it, because we can access it through the original `data` variable.
-- `root.for` works similarly to `root.with`, but the object addressed by the path must be an array, and the template is rendered for every array element.
-- The inner `row.for` does not contain a path, because it uses the parent data directly (it would be equivalent to calling `row.for('', ($, cell) => … )`).
+- `root.for` works similarly to `root.use`, but the object addressed by the path must be an array, and the template is rendered for every array element.
+- The inner `row.each` does not contain a path, because it uses the parent data directly (it would be equivalent to calling `row.each('', ($, cell) => … )`).
 - The `cell.set` shorthand is actually equivalent to this: `e => cell.set(e)`, which is in fact this: `e => cell.set('', e)`. And that is equivalent to this: `e => set('', e.target.value)`.
 - `set` really just writes the value back into the data and calls `dasy.refresh()`. Obviously, if multiple fields change at once, that is not economical, and it is better to call `refresh()` separately, as you can also see with the buttons.
 - You can also pass an event object directly: `root.set('.form.value', e)` reads `e.target.value`.
 - Or pass a modifier function: `root.set('.form.counter', i => i + 1)`.
-- `for()` accepts an optional second template that is rendered when the array is empty.
+- `each()` accepts an optional second template that is rendered when the array is empty.
 - dasy makes it possible, for example, when adding columns, for the other rendered <td> elements not to change.
 
 ## Nested contexts
 
-`with()` and `for()` return a context object that works like `root` but is bound to the selected path. You can nest them:
+`use()` and `each()` return a context object that works like `root` but is bound to the selected path. You can nest them:
 
 ```js
-root.with('.counters', ($, outer) => html`
+root.use('.counters', ($, outer) => outer.html`
   <p>Outer: <b>${$.first}</b></p>
-  <p>Inner: <b>${outer.with('.second', $ => $.value)}</b></p>
+  <p>Inner: <b>${outer.use('.second', $ => $.value)}</b></p>
 `)`
 ```
 
@@ -247,13 +256,13 @@ const shared = new DasyDataSource({
 });
 
 // First view
-const page1 = dasy({ dataSource: shared, container: document.body }, (_, root) => html`
-  <p>First counter: ${root.with('.form', o => o.counter)}</p>
+const page1 = dasy({ dataSource: shared, container: document.body }, (_, root) => root.html`
+  <p>First counter: ${root.use('.form', o => o.counter)}</p>
 `);
 
 // Second view on the same data
-const page2 = dasy({ dataSource: shared, container: document.body }, (_, root) => html`
-  <p>Second counter: ${root.with('.form', o => o.counter)}</p>
+const page2 = dasy({ dataSource: shared, container: document.body }, (_, root) => root.html`
+  <p>Second counter: ${root.use('.form', o => o.counter)}</p>
 `);
 
 // Changing shared data and refreshing the source updates both views

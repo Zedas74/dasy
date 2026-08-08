@@ -1,4 +1,4 @@
-import { dasy, html } from '../dist/dasy.mjs';
+import { dasy } from '../dist/dasy.mjs';
 
 export function render(container, afterRefresh) {
 	const data = {
@@ -10,18 +10,18 @@ export function render(container, afterRefresh) {
 		}
 	};
 
-	dasy({ data, container, afterRefresh }, (_, root) => html`
+	dasy({ data, container, afterRefresh }, (_, root) => root.html`
 		<div>
 			<div class="counters">${
 
 				// `$` is the 'counters' object from the data; `outer` is its context.
-				root.with('.counters', ($, outer) => html`
+				root.use('.counters', ($, outer) => outer.html`
 					<p>Outer counter: <b>${$.first}</b></p>
 					<p>Inner counter: <b>${
 
 						// This context is based on the 'outer' context, not the root.
 						// The '.second' path is related to the 'counters' object.
-						outer.with('.second', $ => $.value)
+						outer.use('.second', $ => $.value)
 					}</b></p>`)
 			}</div>
 			<p>

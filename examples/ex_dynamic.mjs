@@ -1,4 +1,4 @@
-import { dasy, html } from '../dist/dasy.mjs';
+import { html, dasy } from '../dist/dasy.mjs';
 
 export function render(container, afterRefresh) {
 	let output;
@@ -9,9 +9,9 @@ export function render(container, afterRefresh) {
 		const container = output.appendChild(document.createElement('div'));
 
 		// Store the new dasy instance in an array as `syndInstance`.
-		pages.push({ container, syndInstance: dasy({ data, container, afterRefresh }, (_, root) => html`
+		pages.push({ container, syndInstance: dasy({ data, container, afterRefresh }, (_, root) => root.html`
 			<p>
-				<span>Counter: ${root.with('.form', o => o.counter)}</span>
+				<span>Counter: ${root.use('.form', o => o.counter)}</span>
 				<button onClick="${() => root.set('.form.counter', i => i +1)}">+1</button>
 			</p>
 		`) });

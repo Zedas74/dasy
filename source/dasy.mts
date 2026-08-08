@@ -1,20 +1,19 @@
 import { applyDiffs, diffDeep, JSONPath, getByPath, setByPath, assertNoReferenceRedundancies, type DiffEntry, JSONUndoBuffer } from './json_tools.mjs';
-import { html, svg, type HTMLAttributeValue } from './html.mjs';
+import { html, svg, type HTMLAttributeValue, type TemplateParams } from './html.mjs';
 
 type DasyPathArgument = JSONPath | string;
 type DasyDiffKind = DiffEntry[1];
 type DasyDiffEntry = DiffEntry;
-type DasyWatcherKind = 'for' | 'with';
-
-type DasyRenderContext = {
-    currentWatcher?: DasyWatcher;
-}
+type DasyWatcherKind = 'each' | 'use' | 'item';
 
 type DasyTemplateResult = Node | HTMLAttributeValue | null | undefined | boolean | readonly DasyTemplateResult[];
 type DasyTemplateContext = {
-    for(path: DasyPathArgument | DasyTemplateFunction, template?: DasyTemplateFunction, emptyTemplate?: DasyTemplateFunction): (parent: Element) => DocumentFragment;
-    with(path: DasyPathArgument, template: DasyTemplateFunction): (parent: Element | Attr) => DasyTemplateResult;
+    each(path: DasyPathArgument | DasyTemplateFunction, template?: DasyTemplateFunction, 
+        emptyTemplate?: DasyTemplateFunction): (parent: Element, params: TemplateParams) => DocumentFragment;
+    use(path: DasyPathArgument, template: DasyTemplateFunction): (parent: Element | Attr, params: TemplateParams) => DasyTemplateResult;
     set(path: DasyPathArgument | unknown, value?: unknown): void;
+    html(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
+    svg(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
     refresh(): void;
 }
 type DasyTemplateFunction = (
@@ -22,8 +21,6 @@ type DasyTemplateFunction = (
     root: DasyTemplateContext,
     parent: Element | Attr,
     path: string,
-    renderParent?: DasyTemplateContext,
-    ownerParent?: DasyTemplateContext,
 ) => DasyTemplateResult;
 
 type DasyWatcherParams = {
@@ -33,7 +30,6 @@ type DasyWatcherParams = {
     attributeOwner?: Element;
     template: DasyTemplateFunction;
     ownerParent?: DasyWatcher;
-    renderParent?: DasyWatcher;
     kind?: DasyWatcherKind;
     children?: DasyWatcher[];
     emptyTemplate?: DasyTemplateFunction;
@@ -112,7 +108,7 @@ class DasyDataSource {
 /**
  * This is a data binding observer.
  * Holds the path, the parent DOM element/attr, the template function,
- * and the inner watcher tree structure (for/with directives).
+ * and the inner watcher tree structure (each/use directives).
  */
 class DasyWatcher {
     dasy: Dasy | undefined = undefined; // Parent dasy instance
@@ -123,63 +119,93 @@ class DasyWatcher {
     endNode: Text | undefined = undefined; // DOM bookmark in parent after the template's own value
     template: DasyTemplateFunction | undefined = undefined; // Template function which produce the dasy
     ownerParent: DasyWatcher | undefined = undefined; // Watcher that owns this watcher's lifecycle
-    renderParent: DasyWatcher | undefined = undefined; // Watcher whose template API is exposed as renderParent
     templateAPI: DasyTemplateContext | undefined = undefined; // Functions which are available in the template function
-    kind: DasyWatcherKind = 'with';
+    kind: DasyWatcherKind = 'use';
     children: DasyWatcher[] | undefined = undefined; // Owned watcher subtree
-    emptyTemplate: DasyTemplateFunction | undefined = undefined; // Template rendered when a 'for' array is empty
+    timedAttributes: Array<{ attr: Attr, ownerElement: Element }> | undefined = undefined;
+    emptyTemplate: DasyTemplateFunction | undefined = undefined; // Template rendered when a 'each' array is empty
+    controller: AbortController;
 
     constructor(oParams: DasyWatcherParams) {
         Object.assign(this, oParams);
+        const ownerDocument = this.parent instanceof Attr ? this.parent.ownerElement?.ownerDocument : this.parent?.ownerDocument;
+        const AbortControllerType = ownerDocument?.defaultView?.AbortController ?? AbortController;
+        this.controller = new AbortControllerType();
+        const signal = this.controller.signal;
         if (!this.attributeOwner && this.parent instanceof Attr)
             this.attributeOwner = this.parent.ownerElement ?? undefined;
         const templateAPI: DasyTemplateContext = {
-            for: (path, template, emptyTemplate) => (parent: Element) => this.renderFor(path, template, emptyTemplate, parent),
-            with: (path, template) => (parent: Element | Attr) => this.renderWith(path, template, parent),
+            each: (path, template, emptyTemplate) => (parent: Element, params: TemplateParams) => 
+                this.renderEach(path, template, emptyTemplate, parent, params),
+            use: (path, template) => (parent: Element | Attr, params: TemplateParams) => this.renderUse(path, template, parent, params),
             set: this.set,
             refresh: this.refresh,
+            html: (chunks: TemplateStringsArray, ...values: unknown[]) => html({ signal, parentWatcher: this })(chunks, ...values),
+            svg: (chunks: TemplateStringsArray, ...values: unknown[]) => svg({ signal, parentWatcher: this })(chunks, ...values),
         };
         this.templateAPI = Object.freeze(templateAPI);
     }
 
     /**
      * Creates another watcher within the same Dasy instance.
-     * This keeps watcher construction consistent across for/with/rebuild paths.
+     * This keeps watcher construction consistent across each/use/rebuild paths.
      */
     createWatcher(oParams: Omit<DasyWatcherParams, 'dasy'>): DasyWatcher {
         return new DasyWatcher({ dasy: this.dasy as Dasy, ...oParams });
     }
 
-    /**
-     * Registers a child watcher both in the owner tree and in the path index.
-     */
-    registerChild(oWatcher: DasyWatcher): DasyWatcher {
-        (this.children ??= []).push(oWatcher);
-        (this.dasy as Dasy).addWatcher(oWatcher);
-        return oWatcher;
+    ownWatcher(oParams: Omit<DasyWatcherParams, 'dasy' | 'ownerParent'>): DasyWatcher {
+        const watcher = this.createWatcher({ ...oParams, ownerParent: this });
+        (this.children ??= []).push(watcher);
+        (this.dasy as Dasy).addWatcher(watcher);
+        return watcher;
+    }
+
+    parentWatcherFrom(params: TemplateParams): DasyWatcher {
+        const parentWatcher = params.parentWatcher as DasyWatcher | undefined;
+        if (!parentWatcher)
+            throw new TypeError('each() and use() require context html/svg templates. Use the template context\'s html`...` or svg`...` so signal and watcher ownership are available.');
+        return parentWatcher;
+    }
+
+    registerTimedAttribute(attr: Attr, ownerElement: Element): void {
+        (this.timedAttributes ??= []).push({ attr, ownerElement });
+    }
+
+    reapplyTimedAttributes(): void {
+        for (const { attr, ownerElement } of this.timedAttributes ?? []) {
+            if (attr.ownerElement !== ownerElement)
+                continue;
+            (this.dasy as Dasy).applyAttributeBindingValue(attr, attr.value, ownerElement);
+        }
     }
 
     /**
      * If parent is Attr, calls renderAttribute, otherwise
      * calls renderTemplate with wrapFragment (startNode/endNode sentinels).
      */
-    render(data: unknown, renderContext: DasyRenderContext): DocumentFragment | HTMLAttributeValue {
+    render(data: unknown): DocumentFragment | HTMLAttributeValue {
         if (this.parent instanceof Attr)
-            return this.renderAttribute(data, renderContext);
+            return this.renderAttribute(data);
+        this.timedAttributes = undefined;
         const dasy = this.dasy as Dasy;
         const template = this.template as DasyTemplateFunction;
         const parent = this.parent as Element;
-        return this.wrapFragment(dasy.renderTemplate(template, data, this, parent, renderContext, this.renderParent, this.ownerParent));
+        return this.wrapFragment(dasy.renderTemplate(template, data, this, parent));
     }
 
     /**
      * For attribute binding: renders the template with the value.
      */
-    renderAttribute(data: unknown, renderContext: DasyRenderContext): HTMLAttributeValue {
+    renderAttribute(data: unknown): HTMLAttributeValue {
         const dasy = this.dasy as Dasy;
         const template = this.template as DasyTemplateFunction;
         const parent = this.parent as Attr;
-        return dasy.renderTemplateValue(template, data, this, parent, renderContext, this.renderParent, this.ownerParent);
+        return dasy.renderTemplateValue(template, data, this, parent);
+    }
+
+    get templateParams(): TemplateParams {
+        return { signal: this.controller.signal, parentWatcher: this };
     }
 
     /**
@@ -229,78 +255,64 @@ class DasyWatcher {
      *    and inserts it into the fragment between startNode/endNode sentinels.
      * 4. Registers the baseWatcher and inner watchers in the dasy.
      */
-    renderFor(path: DasyPathArgument | DasyTemplateFunction, template: DasyTemplateFunction | undefined, emptyTemplate: DasyTemplateFunction | undefined, parent: Element): DocumentFragment {
+    renderEach(path: DasyPathArgument | DasyTemplateFunction, template: DasyTemplateFunction | undefined, 
+        emptyTemplate: DasyTemplateFunction | undefined, parent: Element, params: TemplateParams): DocumentFragment {
         const dasy = this.dasy as Dasy;
-        const renderContext = dasy.activeRenderContext;
         if (!(parent instanceof Element))
-            throw new TypeError('"for" must be used inside an element parent');
-        if (!renderContext)
-            throw new TypeError('Render context missing for "for"');
+            throw new TypeError('"each" must be used inside an element parent');
         if (template === undefined && typeof path === 'function') { template = path; path = ''; }
         const fullPath = this.resolvePath(path as DasyPathArgument);
         const data = getByPath(dasy.data, fullPath);
-        if (!Array.isArray(data)) throw new TypeError('"for" only usable for arrays');
-        const renderParent = renderContext.currentWatcher ?? this;
-        const baseWatcher = this.createWatcher({
+        if (!Array.isArray(data)) throw new TypeError('"each" only usable for arrays');
+        const parentWatcher = this.parentWatcherFrom(params);
+        const baseWatcher = parentWatcher.ownWatcher({
             path: fullPath,
             parent,
             template: template as DasyTemplateFunction,
-            kind: 'for',
-            ownerParent: renderParent,
-            renderParent,
+            kind: 'each',
             emptyTemplate,
         });
         const allItems = baseWatcher.wrapFragment(document.createDocumentFragment());
         data.forEach((value, index) => {
-            const newWatcher = baseWatcher.createWatcher({
+            const newWatcher = baseWatcher.ownWatcher({
                 path: new JSONPath([...fullPath, index]),
                 parent,
                 template: template as DasyTemplateFunction,
-                ownerParent: baseWatcher,
-                renderParent,
+                kind: 'item',
             });
-            const fragment = newWatcher.render(value, renderContext);
-            baseWatcher.registerChild(newWatcher);
+            const fragment = newWatcher.render(value);
             allItems.insertBefore(fragment as Node, baseWatcher.endNode as Text);
         });
         if (data.length === 0 && emptyTemplate) {
-            const emptyWatcher = baseWatcher.createWatcher({
+            const emptyWatcher = baseWatcher.ownWatcher({
                 path: fullPath,
                 parent,
                 template: emptyTemplate,
-                ownerParent: baseWatcher,
-                renderParent,
             });
-            const fragment = emptyWatcher.render(data, renderContext);
-            baseWatcher.registerChild(emptyWatcher);
+            const fragment = emptyWatcher.render(data);
             allItems.insertBefore(fragment as Node, baseWatcher.endNode as Text);
         }
-        renderParent.registerChild(baseWatcher);
         return allItems;
     }
 
     /**
      * Renders the `with` directive:
-     * 1. Resolves the full path, fetches the data (must be an object, not array).
+     * 1. Resolves the full path, fetches the data (must be an object or array).
      * 2. Creates a new watcher with the full path.
      * 3. Renders the template with the data, and registers the watcher.
      */
-    renderWith(path: DasyPathArgument, template: DasyTemplateFunction, parent: Element | Attr): DasyTemplateResult {
+    renderUse(path: DasyPathArgument, template: DasyTemplateFunction, parent: Element | Attr, params: TemplateParams): DasyTemplateResult {
         const dasy = this.dasy as Dasy;
-        const renderContext = dasy.activeRenderContext;
         const attributeBinding = parent instanceof Attr;
         if (!attributeBinding && !(parent instanceof Element))
-            throw new TypeError('"with" must be used inside an element parent');
-        if (!renderContext)
-            throw new TypeError('Render context missing for "with"');
+            throw new TypeError('"use" must be used inside an element parent');
         const jsonPath = this.resolvePath(path);
         const data = getByPath(dasy.data, jsonPath);
-        if (data === null || typeof data !== 'object' || Array.isArray(data))
-            throw new TypeError('"with" only usable for objects');
-        const renderParent = renderContext.currentWatcher ?? this;
-        const newWatcher = this.createWatcher({ path: jsonPath, parent, template, ownerParent: renderParent, renderParent });
-        const result = newWatcher.render(data, renderContext);
-        renderParent.registerChild(newWatcher);
+        if (data === null || typeof data !== 'object')
+            throw new TypeError('"use" only usable for objects or arrays');
+        const parentWatcher = this.parentWatcherFrom(params);
+        const newWatcher = parentWatcher.ownWatcher({ path: jsonPath, parent, template });
+        const result = newWatcher.render(data);
         return result;
     }
 
@@ -340,7 +352,7 @@ class DasyWatcher {
      */
     clearChildren(): void {
         while (this.children?.length)
-            (this.dasy as Dasy).removeWatcher(this.children[this.children.length - 1], this);
+            (this.dasy as Dasy).removeWatcher(this.children[this.children.length - 1]);
     }
 
     /**
@@ -348,14 +360,16 @@ class DasyWatcher {
      * sets all properties to undefined.
      */
     disconnect(): void {
+        this.controller.abort();
         this.clearContentDOMNodes();
         this.startNode?.remove(); this.startNode = undefined;
         this.endNode?.remove(); this.endNode = undefined;
         this.clearChildren();
         this.dasy = undefined; this.path = undefined; this.parent = undefined; this.template = undefined; 
-        this.ownerParent = undefined; this.renderParent = undefined;
+        this.ownerParent = undefined;
         this.attributeOwner = undefined;
         this.templateAPI = undefined;
+        this.timedAttributes = undefined;
     }
 }
 
@@ -390,12 +404,10 @@ class Dasy {
     #data: object | undefined; // Dasy's JSON data source
     #backup: object | undefined; // Copy of the JSON data
     #container: HTMLElement | undefined; // Parent DOM element
-    #activeRenderContext: DasyRenderContext | undefined;
     #beforeRefresh: ((data: object) => void) | undefined;
     #afterRefresh: ((data: object) => void) | undefined;
     #dataSource: DasyDataSource | undefined; // Optional shared data source
     #unsubscribe: (() => void) | undefined; // Unsubscribe from the shared data source
-    static #createRenderContext = (): DasyRenderContext => ({ currentWatcher: undefined });
 
     /**
      * Constructor: validates the data (no redundant references),
@@ -422,9 +434,8 @@ class Dasy {
             throw new TypeError('Constructor parameter "dataSource" or "data" required');
 
         this.#data = data;
-        const renderContext = Dasy.#createRenderContext();
         this.#rootWatcher = new DasyWatcher({ dasy: this, path: new JSONPath([]), parent: container, template });
-        container.append(this.renderTemplate(template, data, this.#rootWatcher, container, renderContext, undefined, undefined));
+        container.append(this.renderTemplate(template, data, this.#rootWatcher, container));
     }
 
     get data(): object {
@@ -436,63 +447,38 @@ class Dasy {
     }
 
     /**
-     * The render context is owned by Dasy instead of being copied
-     * onto every watcher instance. Template callbacks query it only
-     * while a render is actively executing.
-     */
-    get activeRenderContext(): DasyRenderContext | undefined {
-        return this.#activeRenderContext;
-    }
-
-    /**
      * The shared data source when the dasy was created in data-source mode.
      */
     get dataSource(): DasyDataSource | undefined {
         return this.#dataSource;
     }
 
-    #withRenderContext<T>(renderContext: DasyRenderContext, callback: () => T): T {
-        const previousContext = this.#activeRenderContext;
-        this.#activeRenderContext = renderContext;
-        try {
-            return callback();
-        } finally {
-            this.#activeRenderContext = previousContext;
-        }
-    }
-
-    #invokeTemplate(template: DasyTemplateFunction, data: unknown, oWatcher: DasyWatcher, parent: Element | Attr, renderContext: DasyRenderContext, oRenderParent?: DasyWatcher, oOwnerParent?: DasyWatcher): unknown {
-        return this.#withRenderContext(renderContext, () => {
-            const previousWatcher = renderContext.currentWatcher;
-            renderContext.currentWatcher = oWatcher;
-            try {
-                const value = template(data, oWatcher.templateAPI as DasyTemplateContext, parent, (oWatcher.path as JSONPath).asPath(), oRenderParent?.templateAPI, oOwnerParent?.templateAPI);
-                if (typeof value === 'function')
-                    this.throwNestedRenderFunction(template);
-                return value;
-            } finally {
-                renderContext.currentWatcher = previousWatcher;
-            }
-        });
+    #invokeTemplate(template: DasyTemplateFunction, data: unknown, oWatcher: DasyWatcher, parent: Element | Attr): unknown {
+        let value: unknown = template(data, oWatcher.templateAPI as DasyTemplateContext, parent, (oWatcher.path as JSONPath).asPath());
+        if (typeof value === 'function')
+            value = (value as ((parent: Element | Attr, params: TemplateParams) => unknown))(parent, oWatcher.templateParams);
+        if (typeof value === 'function')
+            this.throwNestedRenderFunction(template);
+        return value;
     }
 
     throwNestedRenderFunction = (position: unknown): never => {
-        throw new TypeError('Render function leaked into output. If you return {dasy}.for(...) or {dasy}.with(...) from another callback, wrap it in html`<div>${...}</div>` or another element.\n' + String(position));
+        throw new TypeError('Render function leaked into output. The template returned another render function instead of DOM or an attribute value.\n' + String(position));
     }
 
     /**
      * Renders template to a DOM node.
      *
-     * 1. Sets the currentWatcher in the renderContext.
-     * 2. Calls the template function (data, templateAPI, parent, path, ...).
-     * 3. Handles the return value:
+     * 1. Calls the template function (data, templateAPI, parent, path, ...).
+    * 2. If it returns one render function, executes it with the current parent and watcher params.
+    * 3. Handles the final return value:
      *    - undefined/null/false → empty DocumentFragment
-     *    - function → error (render function leak)
+    *    - function → error (render function leak)
      *    - primitive → wrapped in text node
      *    - Node → returned directly
      */
-    renderTemplate(template: DasyTemplateFunction, data: unknown, oWatcher: DasyWatcher, parent: Element | Attr, renderContext: DasyRenderContext, oRenderParent?: DasyWatcher, oOwnerParent?: DasyWatcher): Node {
-        const fragment = this.#invokeTemplate(template, data, oWatcher, parent, renderContext, oRenderParent, oOwnerParent);
+    renderTemplate(template: DasyTemplateFunction, data: unknown, oWatcher: DasyWatcher, parent: Element | Attr): Node {
+        const fragment = this.#invokeTemplate(template, data, oWatcher, parent);
         if (fragment === undefined || fragment === null || fragment === false)
             return document.createDocumentFragment();
         if (typeof fragment !== 'object') {
@@ -510,8 +496,8 @@ class Dasy {
      * - Only allows string/number/boolean/null/undefined values.
      * - Returns HTMLAttributeValue, not Node.
      */
-    renderTemplateValue(template: DasyTemplateFunction, data: unknown, oWatcher: DasyWatcher, parent: Attr, renderContext: DasyRenderContext, oRenderParent?: DasyWatcher, oOwnerParent?: DasyWatcher): HTMLAttributeValue {
-        const value = this.#invokeTemplate(template, data, oWatcher, parent, renderContext, oRenderParent, oOwnerParent);
+    renderTemplateValue(template: DasyTemplateFunction, data: unknown, oWatcher: DasyWatcher, parent: Attr): HTMLAttributeValue {
+        const value = this.#invokeTemplate(template, data, oWatcher, parent);
         if (value === null || value === undefined)
             return value;
         const type = typeof value;
@@ -555,9 +541,9 @@ class Dasy {
      * 2. Removes from the ownerParent children list.
      * 3. Calls the watcher disconnect (DOM + property cleanup).
      */
-    removeWatcher(oWatcher: DasyWatcher, oOwnerWatcher: DasyWatcher | undefined = oWatcher.ownerParent): void {
+    removeWatcher(oWatcher: DasyWatcher): void {
         this.#removeWatcherFromMap(oWatcher);
-        const ownedWatchers = oOwnerWatcher?.children;
+        const ownedWatchers = oWatcher.ownerParent?.children;
         if (ownedWatchers) {
             const index = ownedWatchers.indexOf(oWatcher);
             if (index !== -1)
@@ -572,16 +558,22 @@ class Dasy {
      * - For Attr: clearChildren → renderAttribute → applyAttributeBindingValue.
      * - For Element: clearChildren → clearContentDOMNodes → renderTemplate → insertBefore(endNode).
      */
-    #update(oWatcher: DasyWatcher, renderContext: DasyRenderContext): void {
+    #update(oWatcher: DasyWatcher): void {
         if (oWatcher.parent instanceof Attr) {
             oWatcher.clearChildren();
-            const value = oWatcher.renderAttribute(getByPath(this.#data as object, oWatcher.path as JSONPath), renderContext);
+            const value = oWatcher.renderAttribute(getByPath(this.#data as object, oWatcher.path as JSONPath));
             this.applyAttributeBindingValue(oWatcher.parent, value, oWatcher.attributeOwner);
             return;
         }
         oWatcher.clearChildren();
         oWatcher.clearContentDOMNodes();
-        (oWatcher.parent as Element).insertBefore(this.renderTemplate(oWatcher.template as DasyTemplateFunction, getByPath(this.#data as object, oWatcher.path as JSONPath), oWatcher, oWatcher.parent as Element, renderContext, oWatcher.renderParent, oWatcher.ownerParent), oWatcher.endNode as Text);
+        (oWatcher.parent as Element).insertBefore(this.renderTemplate(oWatcher.template as DasyTemplateFunction, getByPath(this.#data as object, oWatcher.path as JSONPath), oWatcher, oWatcher.parent as Element), oWatcher.endNode as Text);
+        this.#reapplyAncestorTimedAttributes(oWatcher);
+    }
+
+    #reapplyAncestorTimedAttributes(oWatcher: DasyWatcher): void {
+        for (let parent = oWatcher.ownerParent; parent; parent = parent.ownerParent)
+            parent.reapplyTimedAttributes();
     }
 
     applyAttributeBindingValue(oAttr: Attr, vValue: unknown, ownerElement = oAttr.ownerElement ?? undefined) {
@@ -609,36 +601,32 @@ class Dasy {
      *    renders them, and inserts them into the DOM.
      * Called after diff del/ins operations.
      */
-    #rebuildTail(oBaseWatcher: DasyWatcher, iStartIndex: number, renderContext: DasyRenderContext): void {
+    #rebuildTail(oBaseWatcher: DasyWatcher, iStartIndex: number): void {
         const { path, parent, template, emptyTemplate } = oBaseWatcher;
         const children = oBaseWatcher.children ??= [];
         const data = getByPath(this.#data as object, path as JSONPath) as any[];
         for (let i = children.length - 1; i >= iStartIndex; i--)
-            this.removeWatcher(children[i], oBaseWatcher);
+            this.removeWatcher(children[i]);
         for (let i = iStartIndex; i < data.length; i++) {
-            const newWatcher = oBaseWatcher.createWatcher({
+            const newWatcher = oBaseWatcher.ownWatcher({
                 path: new JSONPath([...(path as JSONPath), i]),
                 parent: parent as Element | Attr,
                 template: template as DasyTemplateFunction,
-                ownerParent: oBaseWatcher,
-                renderParent: oBaseWatcher.renderParent,
+                kind: 'item',
             });
-            const fragment = newWatcher.render(data[i], renderContext);
-            oBaseWatcher.registerChild(newWatcher);
+            const fragment = newWatcher.render(data[i]);
             (parent as Element).insertBefore(fragment as Node, oBaseWatcher.endNode as Text);
         }
         if (data.length === 0 && emptyTemplate) {
-            const emptyWatcher = oBaseWatcher.createWatcher({
+            const emptyWatcher = oBaseWatcher.ownWatcher({
                 path: path as JSONPath,
                 parent: parent as Element | Attr,
                 template: emptyTemplate,
-                ownerParent: oBaseWatcher,
-                renderParent: oBaseWatcher.renderParent,
             });
-            const fragment = emptyWatcher.render(data, renderContext);
-            oBaseWatcher.registerChild(emptyWatcher);
+            const fragment = emptyWatcher.render(data);
             (parent as Element).insertBefore(fragment as Node, oBaseWatcher.endNode as Text);
         }
+        this.#reapplyAncestorTimedAttributes(oBaseWatcher);
     }
 
     /**
@@ -679,25 +667,39 @@ class Dasy {
     /**
      * Filters watchers based on diff type.
      *
-     * - For 'ins' or 'del': prefers kind='for' watchers (array directive),
-     *   because structural changes affect the for.
+     * - When an array path has both each and use watchers, ins/del/val must update all of them.
      * - Otherwise (val/set/rem): prefers kind='with' watchers,
      *   because value changes affect the content.
      * If the first group is empty, chooses from the other.
      */
     #selectWatchersForDiff(aWatchersAtPath: DasyWatcher[], sType: DasyDiffKind): DasyWatcher[] {
-        const preferredKind: DasyWatcherKind = sType === 'ins' || sType === 'del' ? 'for' : 'with';
+        if ((sType === 'ins' || sType === 'del' || sType === 'val') && aWatchersAtPath.some(watcher => watcher.kind === 'each'))
+            return aWatchersAtPath.filter(watcher => watcher.kind !== 'item');
+        const preferredKind: DasyWatcherKind = sType === 'ins' || sType === 'del' ? 'each' : 'use';
         const preferredWatchers = aWatchersAtPath.filter(watcher => watcher.kind === preferredKind);
         if (preferredWatchers.length)
             return preferredWatchers;
         return aWatchersAtPath.filter(watcher => watcher.kind !== preferredKind); // fallbackWatchers
     }
 
+    #updateEachValue(oBaseWatcher: DasyWatcher, key: string | number | undefined): void {
+        if (typeof key !== 'number') {
+            this.#rebuildTail(oBaseWatcher, 0);
+            return;
+        }
+        const watcher = oBaseWatcher.children?.[key];
+        if (!watcher) {
+            this.#rebuildTail(oBaseWatcher, 0);
+            return;
+        }
+        this.#update(watcher);
+    }
+
     /**
      * Applies the given diffs to the DOM tree without touching the backup.
      * Used both by the local refresh path and by data-source subscribers.
      */
-    #syncDiffsToDOM(aDiffs: DasyDiffEntry[], renderContext: DasyRenderContext): void {
+    #syncDiffsToDOM(aDiffs: DasyDiffEntry[]): void {
         const arrayRebuildStarts = this.#collectStructuralArrayRebuildStarts(aDiffs);
         aDiffs.forEach(([path, type, key, value]) => {
             const diffKey = path.asKey();
@@ -706,10 +708,12 @@ class Dasy {
             for (const watcher of watchers) {
                 if (watcher.dasy !== this)
                     continue;
-                if (watcher.kind === 'for' && (type === 'ins' || type === 'del' || type === 'val'))
-                    this.#rebuildTail(watcher, type === 'val' ? 0 : (arrayRebuildStarts.get(diffKey) ?? (key as number)), renderContext);
+                if (watcher.kind === 'each' && (type === 'ins' || type === 'del'))
+                    this.#rebuildTail(watcher, arrayRebuildStarts.get(diffKey) ?? (key as number));
+                else if (watcher.kind === 'each' && type === 'val')
+                    this.#updateEachValue(watcher, key);
                 else
-                    this.#update(watcher, renderContext);
+                    this.#update(watcher);
             }
         });
     }
@@ -718,8 +722,8 @@ class Dasy {
      * Syncs DOM changes and replays the same diffs onto the local backup.
      * Only used when the Dasy owns its own data and backup.
      */
-    #applyDiffsAndSync(aDiffs: DasyDiffEntry[], renderContext: DasyRenderContext): void {
-        this.#syncDiffsToDOM(aDiffs, renderContext);
+    #applyDiffsAndSync(aDiffs: DasyDiffEntry[]): void {
+        this.#syncDiffsToDOM(aDiffs);
         this.#backup = applyDiffs(this.#backup as object, aDiffs).target;
     }
 
@@ -728,8 +732,7 @@ class Dasy {
      */
     receiveDiffs(aDiffs: DasyDiffEntry[]): void {
         assertNoReferenceRedundancies(this.data, 'dasy data');
-        const renderContext = Dasy.#createRenderContext();
-        this.#syncDiffsToDOM(aDiffs, renderContext);
+        this.#syncDiffsToDOM(aDiffs);
         this.#afterRefresh?.(this.data);
     }
 
@@ -738,16 +741,14 @@ class Dasy {
      *
      * 1. Validates the data (no redundant references).
      * 2. Generates diff between backup and data (diffDeep).
-     * 3. Creates a new renderContext for the current refresh pass.
-     * 4. Applies diffs and DOM synchronization (#applyDiffsAndSync).
+     * 3. Applies diffs and DOM synchronization (#applyDiffsAndSync).
      */
     refresh(): void {
         if (this.#dataSource) return;
         this.#beforeRefresh?.(this.#data as object);
         assertNoReferenceRedundancies(this.#data as object, 'dasy data');
         const diffs = diffDeep(this.#backup as object, this.#data as object);
-        const renderContext = Dasy.#createRenderContext();
-        this.#applyDiffsAndSync(diffs, renderContext);
+        this.#applyDiffsAndSync(diffs);
         this.#afterRefresh?.(this.#data as object);
     }
 

@@ -25,7 +25,7 @@ export function render(container, afterRefresh) {
 	}
 
 	// We could say this is a control…
-	const renderBook = book => html`
+	const renderBook = (book, { html }) => html`
 		<div class="book">
 			Title: <b>${book.title}</b><br/>
 			Author: <b>${book.author}</b><br/>
@@ -44,17 +44,17 @@ export function render(container, afterRefresh) {
 	// refresh, so the book array in the data will also be refreshed. dasy will calculate the
 	// necessary DOM changes after `beforeRefresh` returns.
 	// (`afterRefresh` is used by the example page to show the data's JSON view.)
-	dasy({ data, container, beforeRefresh: filterBooks, afterRefresh }, (_, root) => html`
+	dasy({ data, container, beforeRefresh: filterBooks, afterRefresh }, (_, { html, set, each }) => html`
 		<p>Genre filter: 
-			<input onInput="${e => root.set('.form.filter', e)}" placeholder="Filter genre…"/> 
-			<button onClick="${() => root.set('.form.orderAsc', true)}">A-Z</button>
-			<button onClick="${() => root.set('.form.orderAsc', false)}">Z-A</button>
+			<input onInput="${e => set('.form.filter', e)}" placeholder="Filter genre…"/> 
+			<button onClick="${() => set('.form.orderAsc', true)}">A-Z</button>
+			<button onClick="${() => set('.form.orderAsc', false)}">Z-A</button>
 		</p>
-		<div class="books">${root.for('.sources.books', 
-			book => renderBook(book), 
+		<div class="books">${each('.sources.books', 
+			(book, bookRoot) => renderBook(book, bookRoot), 
 			
-			// There is an optional secondary template for the .for() method which is applied when the
+			// There is an optional secondary template for the .each() method which is applied when the
 			// array is empty.
-			() => html`<p>No books found.</p>`)}</div>
+			(_, emptyRoot) => emptyRoot.html`<p>No books found.</p>`)}</div>
 	`);
 }

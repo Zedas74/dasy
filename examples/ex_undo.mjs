@@ -12,21 +12,21 @@ export function render(container, afterRefresh) {
 	// The JSONUndoBuffer can record data snapshots.
 	const undoBuffer = new JSONUndoBuffer(data);
 
-	dasy({ data, container, afterRefresh }, (_, root) => html`
+	dasy({ data, container, afterRefresh }, (_, root) => root.html`
 		<div>
 			<div class="form2col">
-				<span>Text:</span> <input value="${root.with('.form', $ => $.text)}" onChange="${e => {
+				<span>Text:</span> <input value="${root.use('.form', $ => $.text)}" onChange="${e => {
 					root.set('.form.text', e); undoBuffer.snapshot();
 				}}"/>
 
 				<span>Checkbox:</span> <input type="checkbox" checked="${
 					// This is a trick: the dasy will remove the 'checked' attribute, if the value is null or undefined.
-					root.with('.form', $ => $.check ? true : null)
+					root.use('.form', $ => $.check ? true : null)
 				}" onChange="${e => {
 					root.set('.form.check', e.target.checked); undoBuffer.snapshot();
 				}}"/>
 			
-				<span>Number:</span> <input value="${root.with('.form', $ => $.num)}" inputMode="numeric" 
+				<span>Number:</span> <input value="${root.use('.form', $ => $.num)}" inputMode="numeric" 
 					pattern="\\d+" onChange="${e => {
 					root.set('.form.num', e.target.value); undoBuffer.snapshot();
 				}}"/>

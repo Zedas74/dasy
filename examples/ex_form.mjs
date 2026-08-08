@@ -10,36 +10,36 @@ export function render(container, afterRefresh) {
 		}
 	}
 
-	dasy({ data, container, afterRefresh }, (_, root) => html`
+	dasy({ data, container, afterRefresh }, (_, root) => root.html`
 		<div>
 			<p>Edit field for value: <input value="${
 
 				// We create a live attribute here, so the input element won't change itself.
-				// The '$' is the 'test' object. The .with() method only works with objects!
-				root.with('.forms.test', $ => $.value)}" onInput="${e => 
+				// The '$' is the 'test' object. The .use() method only works with objects!
+				root.use('.forms.test', $ => $.value)}" onInput="${e => 
 					
 // This is the same as root.set('.forms.test.value', e.target.value)
 					root.set('.forms.test.value', e)
 
 				}"/></p>
 			<p>Another edit for the same value: <input value="${
-				root.with('.forms.test', $ => $.value)}" onInput="${e => root.set('.forms.test.value', e)}"/></p>
+				root.use('.forms.test', $ => $.value)}" onInput="${e => root.set('.forms.test.value', e)}"/></p>
 			<p>Echo of value: <b>${
 				
-				// Here the .with() method produces a text node.
-				root.with('.forms.test', $ => $.value)
+				// Here the .use() method produces a text node.
+				root.use('.forms.test', $ => $.value)
 			}</b></p>
 			<p>Alternative: ${
 
-				// Here the .with() method produces a DocumentFragment.
-				root.with('.forms.test', $ => html`<b>${$.value}</b>`)
+				// Here the .use() method produces a DocumentFragment.
+				root.use('.forms.test', ($, testRoot) => testRoot.html`<b>${$.value}</b>`)
 			}</p>
-			<p>Select example: <select psValue="${root.with('.forms.test', $ => $.select)}" onChange="${e => 
+			<p>Select example: <select psValue="${root.use('.forms.test', $ => $.select)}" onChange="${e => 
 				root.set('.forms.test.select', e.target.value |0)}">${
-					['Zero', 'One', 'Two', 'Three'].map((s, i) => html`<option value="${i}">${s}</option>`)
+					['Zero', 'One', 'Two', 'Three'].map((s, i) => root.html`<option value="${i}">${s}</option>`)
 					// Alternative: ['Zero', 'One', 'Two', 'Three'].map((s, i) => new Option(s, i))
 				}</select></p>
-			<p>Selected value: <b>${root.with('.forms.test', $ => $.select)}</b></p>
+			<p>Selected value: <b>${root.use('.forms.test', $ => $.select)}</b></p>
 			<hr/>
 			<p>
 				<button onClick="${() => 

@@ -302,22 +302,25 @@ declare class JSONUndoBuffer {
     clear(): void;
 }
 type HTMLAttributeValue = string | number | boolean | null | undefined;
+type TemplateParams = Pick<AddEventListenerOptions, 'signal'> & Record<string, unknown>;
+type HTMLTemplateFunction = (chunks: TemplateStringsArray, ...values: unknown[]) => DocumentFragment;
+declare function html(params: TemplateParams): HTMLTemplateFunction;
 declare function html(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
+declare function svg(params: TemplateParams): HTMLTemplateFunction;
 declare function svg(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
 type DasyPathArgument = JSONPath | string;
 type DasyDiffEntry = DiffEntry;
-type DasyWatcherKind = 'for' | 'with';
-type DasyRenderContext = {
-    currentWatcher?: DasyWatcher;
-};
+type DasyWatcherKind = 'each' | 'use' | 'item';
 type DasyTemplateResult = Node | HTMLAttributeValue | null | undefined | boolean | readonly DasyTemplateResult[];
 type DasyTemplateContext = {
-    for(path: DasyPathArgument | DasyTemplateFunction, template?: DasyTemplateFunction, emptyTemplate?: DasyTemplateFunction): (parent: Element) => DocumentFragment;
-    with(path: DasyPathArgument, template: DasyTemplateFunction): (parent: Element | Attr) => DasyTemplateResult;
+    each(path: DasyPathArgument | DasyTemplateFunction, template?: DasyTemplateFunction, emptyTemplate?: DasyTemplateFunction): (parent: Element, params: TemplateParams) => DocumentFragment;
+    use(path: DasyPathArgument, template: DasyTemplateFunction): (parent: Element | Attr, params: TemplateParams) => DasyTemplateResult;
     set(path: DasyPathArgument | unknown, value?: unknown): void;
+    html(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
+    svg(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
     refresh(): void;
 };
-type DasyTemplateFunction = (data: unknown, root: DasyTemplateContext, parent: Element | Attr, path: string, renderParent?: DasyTemplateContext, ownerParent?: DasyTemplateContext) => DasyTemplateResult;
+type DasyTemplateFunction = (data: unknown, root: DasyTemplateContext, parent: Element | Attr, path: string) => DasyTemplateResult;
 type DasyWatcherParams = {
     dasy: Dasy;
     path: JSONPath;
@@ -325,7 +328,6 @@ type DasyWatcherParams = {
     attributeOwner?: Element;
     template: DasyTemplateFunction;
     ownerParent?: DasyWatcher;
-    renderParent?: DasyWatcher;
     kind?: DasyWatcherKind;
     children?: DasyWatcher[];
     emptyTemplate?: DasyTemplateFunction;
@@ -357,7 +359,7 @@ declare class DasyDataSource {
 /**
  * This is a data binding observer.
  * Holds the path, the parent DOM element/attr, the template function,
- * and the inner watcher tree structure (for/with directives).
+ * and the inner watcher tree structure (each/use directives).
  */
 declare class DasyWatcher {
     dasy: Dasy | undefined;
@@ -368,30 +370,35 @@ declare class DasyWatcher {
     endNode: Text | undefined;
     template: DasyTemplateFunction | undefined;
     ownerParent: DasyWatcher | undefined;
-    renderParent: DasyWatcher | undefined;
     templateAPI: DasyTemplateContext | undefined;
     kind: DasyWatcherKind;
     children: DasyWatcher[] | undefined;
+    timedAttributes: Array<{
+        attr: Attr;
+        ownerElement: Element;
+    }> | undefined;
     emptyTemplate: DasyTemplateFunction | undefined;
+    controller: AbortController;
     constructor(oParams: DasyWatcherParams);
     /**
      * Creates another watcher within the same Dasy instance.
-     * This keeps watcher construction consistent across for/with/rebuild paths.
+     * This keeps watcher construction consistent across each/use/rebuild paths.
      */
     createWatcher(oParams: Omit<DasyWatcherParams, 'dasy'>): DasyWatcher;
-    /**
-     * Registers a child watcher both in the owner tree and in the path index.
-     */
-    registerChild(oWatcher: DasyWatcher): DasyWatcher;
+    ownWatcher(oParams: Omit<DasyWatcherParams, 'dasy' | 'ownerParent'>): DasyWatcher;
+    parentWatcherFrom(params: TemplateParams): DasyWatcher;
+    registerTimedAttribute(attr: Attr, ownerElement: Element): void;
+    reapplyTimedAttributes(): void;
     /**
      * If parent is Attr, calls renderAttribute, otherwise
      * calls renderTemplate with wrapFragment (startNode/endNode sentinels).
      */
-    render(data: unknown, renderContext: DasyRenderContext): DocumentFragment | HTMLAttributeValue;
+    render(data: unknown): DocumentFragment | HTMLAttributeValue;
     /**
      * For attribute binding: renders the template with the value.
      */
-    renderAttribute(data: unknown, renderContext: DasyRenderContext): HTMLAttributeValue;
+    renderAttribute(data: unknown): HTMLAttributeValue;
+    get templateParams(): TemplateParams;
     /**
      * Creates sentinel text nodes (startNode, endNode) for
      * clearing and re-rendering content based on diff.
@@ -416,14 +423,14 @@ declare class DasyWatcher {
      *    and inserts it into the fragment between startNode/endNode sentinels.
      * 4. Registers the baseWatcher and inner watchers in the dasy.
      */
-    renderFor(path: DasyPathArgument | DasyTemplateFunction, template: DasyTemplateFunction | undefined, emptyTemplate: DasyTemplateFunction | undefined, parent: Element): DocumentFragment;
+    renderEach(path: DasyPathArgument | DasyTemplateFunction, template: DasyTemplateFunction | undefined, emptyTemplate: DasyTemplateFunction | undefined, parent: Element, params: TemplateParams): DocumentFragment;
     /**
      * Renders the `with` directive:
-     * 1. Resolves the full path, fetches the data (must be an object, not array).
+     * 1. Resolves the full path, fetches the data (must be an object or array).
      * 2. Creates a new watcher with the full path.
      * 3. Renders the template with the data, and registers the watcher.
      */
-    renderWith(path: DasyPathArgument, template: DasyTemplateFunction, parent: Element | Attr): DasyTemplateResult;
+    renderUse(path: DasyPathArgument, template: DasyTemplateFunction, parent: Element | Attr, params: TemplateParams): DasyTemplateResult;
     /**
      * Sets a value in the data model at the given path.
      * If value is undefined, then value=path, path=''.
@@ -475,12 +482,6 @@ declare class Dasy {
     get data(): object;
     get container(): HTMLElement;
     /**
-     * The render context is owned by Dasy instead of being copied
-     * onto every watcher instance. Template callbacks query it only
-     * while a render is actively executing.
-     */
-    get activeRenderContext(): DasyRenderContext | undefined;
-    /**
      * The shared data source when the dasy was created in data-source mode.
      */
     get dataSource(): DasyDataSource | undefined;
@@ -488,15 +489,15 @@ declare class Dasy {
     /**
      * Renders template to a DOM node.
      *
-     * 1. Sets the currentWatcher in the renderContext.
-     * 2. Calls the template function (data, templateAPI, parent, path, ...).
-     * 3. Handles the return value:
+     * 1. Calls the template function (data, templateAPI, parent, path, ...).
+    * 2. If it returns one render function, executes it with the current parent and watcher params.
+    * 3. Handles the final return value:
      *    - undefined/null/false → empty DocumentFragment
-     *    - function → error (render function leak)
+    *    - function → error (render function leak)
      *    - primitive → wrapped in text node
      *    - Node → returned directly
      */
-    renderTemplate(template: DasyTemplateFunction, data: unknown, oWatcher: DasyWatcher, parent: Element | Attr, renderContext: DasyRenderContext, oRenderParent?: DasyWatcher, oOwnerParent?: DasyWatcher): Node;
+    renderTemplate(template: DasyTemplateFunction, data: unknown, oWatcher: DasyWatcher, parent: Element | Attr): Node;
     /**
      * Renders template for an attribute value.
      *
@@ -504,7 +505,7 @@ declare class Dasy {
      * - Only allows string/number/boolean/null/undefined values.
      * - Returns HTMLAttributeValue, not Node.
      */
-    renderTemplateValue(template: DasyTemplateFunction, data: unknown, oWatcher: DasyWatcher, parent: Attr, renderContext: DasyRenderContext, oRenderParent?: DasyWatcher, oOwnerParent?: DasyWatcher): HTMLAttributeValue;
+    renderTemplateValue(template: DasyTemplateFunction, data: unknown, oWatcher: DasyWatcher, parent: Attr): HTMLAttributeValue;
     /**
      * Registers a watcher in the path-based index map.
      * The key is path.asKey() (with null-byte delimiter), the value is a Set<DasyWatcher>.
@@ -517,7 +518,7 @@ declare class Dasy {
      * 2. Removes from the ownerParent children list.
      * 3. Calls the watcher disconnect (DOM + property cleanup).
      */
-    removeWatcher(oWatcher: DasyWatcher, oOwnerWatcher?: DasyWatcher | undefined): void;
+    removeWatcher(oWatcher: DasyWatcher): void;
     applyAttributeBindingValue(oAttr: Attr, vValue: unknown, ownerElement?: Element | undefined): void;
     /**
      * Entry point used by DasyDataSource to deliver scope-relative diffs.
@@ -528,8 +529,7 @@ declare class Dasy {
      *
      * 1. Validates the data (no redundant references).
      * 2. Generates diff between backup and data (diffDeep).
-     * 3. Creates a new renderContext for the current refresh pass.
-     * 4. Applies diffs and DOM synchronization (#applyDiffsAndSync).
+     * 3. Applies diffs and DOM synchronization (#applyDiffsAndSync).
      */
     refresh(): void;
     /**

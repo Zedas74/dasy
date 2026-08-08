@@ -1,4 +1,4 @@
-import { dasy, html } from '../dist/dasy.mjs';
+import { dasy } from '../dist/dasy.mjs';
 
 export function render(container, afterRefresh) {
 	const data = {
@@ -25,15 +25,15 @@ export function render(container, afterRefresh) {
 	};
 
 	// The template will be at most 10 levels deep.
-	const renderLevel = (level, context, depth = 0) => depth >= 10 ? '' : html`
+	const renderLevel = (level, context, depth = 0) => depth >= 10 ? '' : context.html`
 		<li>
 			<input value="${level.title}" onChange="${e => context.set('.title', e)}" style="border: none"/><br/>
-			<ul>${context.for('.items', (o, c) => renderLevel(o, c, depth +1))}</ul>
+			<ul>${context.each('.items', (o, c) => renderLevel(o, c, depth +1))}</ul>
 		</li>
 	`;
 
 	// Base UL element for all children.
-	dasy({ data, container, afterRefresh }, (o, c) => html`
+	dasy({ data, container, afterRefresh }, (o, c) => c.html`
 		<h4>You can edit the titles below…</h4>
 		<ul>${renderLevel(o, c)}</ul>
 	`);

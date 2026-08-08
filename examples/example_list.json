@@ -1,0 +1,15 @@
+[
+	{ "title": "How to use the \"html\" template literal", "script": "ex_html" },
+	{ "title": "Render a two dimensional array with dasy", "script": "ex_table" },
+	{ "title": "More advanced grid rendering with dasy", "script": "ex_table2" },
+	{ "title": "Multiple templates on the same data", "script": "ex_multi" },
+	{ "title": "How to use form data", "script": "ex_form" },
+	{ "title": "Nested withs", "script": "ex_nested" },
+	{ "title": "Dynamic dasy creation", "script": "ex_dynamic" },
+	{ "title": "Form undo", "script": "ex_undo" },
+	{ "title": "Recursive dasy", "script": "ex_outline" },
+	{ "title": "Dasy with SVG", "script": "ex_svg" },
+	{ "title": "Advanced: Simple filtered, ordered list", "script": "ex_filter" },
+	{ "title": "Advanced: Multiple dasy on the same data", "script": "ex_source" },
+	{ "title": "Advanced: Editable options", "script": "ex_table3" }
+]

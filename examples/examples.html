@@ -8,21 +8,6 @@
 import { highlight } from './highlight.mjs';
 import { html } from '../dist/dasy.mjs';
 
-const aExamples = [
-	{ title: `How to use the 'html' template literal`, script: 'ex_html' },
-	{ title: `Render a two dimensional array with dasy`, script: 'ex_table' },
-	{ title: `More advanced grid rendering with dasy`, script: 'ex_table2' },
-	{ title: `Multiple templates on the same data`, script: 'ex_multi' },
-	{ title: `How to use form data`, script: 'ex_form' },
-	{ title: `Simple filtered, ordered list`, script: 'ex_filter' },
-	{ title: `Nested withs`, script: 'ex_nested' },
-	{ title: `Dynamic dasy creation`, script: 'ex_dynamic' },
-	{ title: `Form undo`, script: 'ex_undo' },
-	{ title: `Recursive dasy`, script: 'ex_outline' },
-	{ title: `Dasy with SVG`, script: 'ex_svg' },
-	{ title: `Multiple dasy on the same data`, script: 'ex_source' },
-];
-
 function showJSON(oJSON) {
 	const oDataElement = document.getElementById('data');
 	oDataElement.innerHTML = JSON.stringify(oJSON, undefined, 2);
@@ -43,7 +28,8 @@ async function load(sExample) {
 	highlight(sText, oSourceElement);
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+	const aExamples = await (await fetch('./example_list.json')).json();
 	document.getElementById('examples').append(
 		...aExamples.map(o => html`<a id="${o.script}" href="${'#' +o.script}" onClick="${e => { e.stopPropagation(); load(o.script); }}">${
 			o.title}</a><br/>`)

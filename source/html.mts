@@ -2,6 +2,7 @@ type HTMLAttributeValue = string | number | boolean | null | undefined;
 type TemplateFunction = (...args: any[]) => unknown; // For arrow functions in the ${...} parts
 type TimedAttrs = Array<[Attr, HTMLAttributeValue]>;
 type CloserEntry = [ name: string, target: Element, attrs: TimedAttrs, pos: number ];
+type TemplateParams = Pick<AddEventListenerOptions, 'signal'> & Record<string, unknown>;
 
 // ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 // HTML
@@ -85,18 +86,23 @@ class HTMLTemplate {
         return document.createElement(sTagName);
     }
 
+    registerTimedAttribute(params: TemplateParams, attr: Attr, ownerElement: Element): void {
+        const parentWatcher = params.parentWatcher as { registerTimedAttribute?: (attr: Attr, ownerElement: Element) => void } | undefined;
+        parentWatcher?.registerTimedAttribute?.(attr, ownerElement);
+    }
+
     // Add the ${...} expression's value to the DOM
-    appendValue(oParent: DocumentFragment | Element, vValue: unknown, sChunk: string, getErrorPos?: () => string): void {
+    appendValue(oParent: DocumentFragment | Element, vValue: unknown, sChunk: string, params: TemplateParams, getErrorPos?: () => string): void {
         if (this.isIgnorableValue(vValue)) 
             return;
         if (typeof vValue === 'function') {
-            vValue = (vValue as TemplateFunction)(oParent);
+            vValue = (vValue as TemplateFunction)(oParent, params);
             if (typeof vValue === 'function')
                 this.throwNestedRenderFunction(getErrorPos?.());
         }
         if (Array.isArray(vValue)) {
             for (const item of vValue) 
-                this.appendValue(oParent, item, sChunk, getErrorPos);
+                this.appendValue(oParent, item, sChunk, params, getErrorPos);
             return;
         }
         if (vValue instanceof Node) {
@@ -106,7 +112,7 @@ class HTMLTemplate {
         oParent.append(document.createTextNode(String(vValue)));
     }
 
-    parser(aChunks: TemplateStringsArray, aValues: unknown[]): DocumentFragment {
+    parser(aChunks: TemplateStringsArray, aValues: unknown[], params: TemplateParams): DocumentFragment {
         const oResult = document.createDocumentFragment();
 
         let oCurrentElement: Element;
@@ -169,7 +175,7 @@ class HTMLTemplate {
                     if (sText.trim())
                         throw new TypeError(`Attribute expected at '${getErrorPos(iCurrentPos)}'`);
                 } else if (sText)
-                    this.appendValue(oParent, sText, sChunk, () => getErrorPos(iCurrentPos));
+                    this.appendValue(oParent, sText, sChunk, params, () => getErrorPos(iCurrentPos));
                 iPreviousEnd = HTMLTemplate.reToken.lastIndex;
                 if (bQuoteExpected && quo === undefined)
                     throw new TypeError(`Quote missing at '${getErrorPos(iCurrentPos)}'`);
@@ -199,19 +205,20 @@ class HTMLTemplate {
                     oCurrentElement.setAttribute(atn, atv);
                 } else if (atl !== undefined) { // Attribute name before code, like: value="
                     const vValue = aValues[iChunkIndex];
-                    const fnValue = typeof vValue === 'function' ? vValue as ((attr: Attr) => HTMLAttributeValue) : undefined;
+                    const fnValue = typeof vValue === 'function' ? vValue as ((attr: Attr, params: TemplateParams) => HTMLAttributeValue) : undefined;
                     if (HTMLTemplate.reOn.test(atl) && fnValue) { // onClick → click, etc.
-                        oCurrentElement.addEventListener(this.removePrefix(atl), vValue as EventListener);
+                        oCurrentElement.addEventListener(this.removePrefix(atl), vValue as EventListener, 
+                            'signal' in params ? params : undefined);
                     } else if (HTMLTemplate.rePs.test(atl)) { // Timed attribute
                         const sName = this.removePrefix(atl);
                         const oAttr = document.createAttribute(sName);
                         const aCloser = aClosers.at(-1);
                         if (aCloser)
-                            aCloser[2].push([oAttr, fnValue?.(oAttr) ?? vValue as HTMLAttributeValue]);
+                            aCloser[2].push([oAttr, fnValue?.(oAttr, params) ?? vValue as HTMLAttributeValue]);
                     } else {
                         const oAttr = document.createAttribute(atl);
                         oCurrentElement.setAttributeNode(oAttr);
-                        this.applyAttributeBindingValue(oAttr, fnValue?.(oAttr) ?? vValue as HTMLAttributeValue);
+                        this.applyAttributeBindingValue(oAttr, fnValue?.(oAttr, params) ?? vValue as HTMLAttributeValue);
                     }
                     bValueUsed = true;
                     bQuoteExpected = true;
@@ -231,6 +238,7 @@ class HTMLTemplate {
                         aTimedAttrs.forEach(([attr, attrValue]) => {
                             oCurrentElement.setAttributeNode(attr);
                             this.applyAttributeBindingValue(attr, attrValue);
+                            this.registerTimedAttribute(params, attr, oCurrentElement);
                         });
                         oParent = (oParent.parentNode ?? oResult) as DocumentFragment | Element;
                     }
@@ -247,6 +255,7 @@ class HTMLTemplate {
                     aTimedAttrs.forEach(([attr, attrValue]) => {
                         oCurrentElement.setAttributeNode(attr);
                         this.applyAttributeBindingValue(attr, attrValue);
+                        this.registerTimedAttribute(params, attr, oCurrentElement);
                     });
                     oParent = (oParent.parentNode ?? oResult) as DocumentFragment | Element;
                     bAttributeExpected = false;
@@ -264,14 +273,14 @@ class HTMLTemplate {
                     if (sTailText.trim())
                         throw new TypeError(`Attribute expected at '${getErrorPos(sChunk.length)}'`);
                 } else {
-                    this.appendValue(oParent, sTailText, sTailText);
+                    this.appendValue(oParent, sTailText, sTailText, params);
                 }
             }
 
             if (!bValueUsed && iChunkIndex < aValues.length) {
                 if (bAttributeExpected && !this.isIgnorableValue(aValues[iChunkIndex]))
                     throw new TypeError(`Unexpected value in element declaration at '${getErrorPos(sChunk.length, 4)}'`);
-                this.appendValue(oParent, aValues[iChunkIndex], sChunk, () => getErrorPos(sChunk.length, 4));
+                this.appendValue(oParent, aValues[iChunkIndex], sChunk, params, () => getErrorPos(sChunk.length, 4));
             }
 
             iAllPos += sChunk.length +4;
@@ -306,8 +315,14 @@ class HTMLTemplate {
  */
 const htmlTemplate = new HTMLTemplate();
 
-function html(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment {
-    return htmlTemplate.parser(chunks, values);
+type HTMLTemplateFunction = (chunks: TemplateStringsArray, ...values: unknown[]) => DocumentFragment;
+
+function html(params: TemplateParams): HTMLTemplateFunction;
+function html(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
+function html(first: TemplateParams | TemplateStringsArray, ...values: unknown[]): DocumentFragment | HTMLTemplateFunction {
+    if (Array.isArray(first))
+        return htmlTemplate.parser(first as unknown as TemplateStringsArray, values, {});
+    return (chunks: TemplateStringsArray, ...values: unknown[]) => htmlTemplate.parser(chunks, values, first as TemplateParams);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -338,10 +353,14 @@ class SVGTemplate extends HTMLTemplate {
  */
 const svgTemplate = new SVGTemplate();
 
-function svg(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment {
-    return svgTemplate.parser(chunks, values);
+function svg(params: TemplateParams): HTMLTemplateFunction;
+function svg(chunks: TemplateStringsArray, ...values: unknown[]): DocumentFragment;
+function svg(first: TemplateParams | TemplateStringsArray, ...values: unknown[]): DocumentFragment | HTMLTemplateFunction {
+    if (Array.isArray(first))
+        return svgTemplate.parser(first as unknown as TemplateStringsArray, values, {});
+    return (chunks: TemplateStringsArray, ...values: unknown[]) => svgTemplate.parser(chunks, values, first as TemplateParams);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-export { html, svg, type HTMLAttributeValue };
+export { html, svg, type HTMLAttributeValue, type TemplateParams };

@@ -1,4 +1,4 @@
-import { dasy, html } from '../dist/dasy.mjs';
+import { dasy } from '../dist/dasy.mjs';
 
 export function render(container, afterRefresh) {
 	const data = {
@@ -7,17 +7,17 @@ export function render(container, afterRefresh) {
 		}
 	};
 
-	const page = dasy({ data, container, afterRefresh }, (_, root) => html`
+	const page = dasy({ data, container, afterRefresh }, (_, root) => root.html`
 		${
 		// This will create an array of HTMLElements with ten counter DIVs.
 		// The html template literal will insert all elements into the DOM.
 		new Array(10).fill(0).map((_, i) => 
 			
-			// The magic is in the .with() method, which creates a live data watcher for the counter.
+			// The magic is in the .use() method, which creates a live data watcher for the counter.
 			// When the data changes, all of the counters will follow. Only the counters will change
 			// in the DOM!
-				// The .with() method only works with an object!
-				html`<div>Counter-${i}: ${root.with('.form', o => o.counter)}</div>`
+				// The .use() method only works with an object!
+				root.html`<div>Counter-${i}: ${root.use('.form', o => o.counter)}</div>`
 			)
 		}<div>
 			<!-- This will change the data and trigger the dasy refresh. -->
